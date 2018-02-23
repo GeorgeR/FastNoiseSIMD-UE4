@@ -1,0 +1,1517 @@
+void FFastNoiseVectorSet::SetSize(int32 InSize)
+{
+	Size = InSize;
+	
+	int32 AlignedSize = FFastNoiseSIMD::AlignedSize(InSize);
+	
+	Set.Reserve(AlignedSize * 3);
+}
+
+class FFastNoiseSIMD
+{
+private:
+
+};
+
+
+
+FSingle VECTORCALL ValueCoordinate(FInteger InSeed, FInteger InX, FInteger InY, FInteger InZ)
+{
+	FInteger Hash = InSeed;
+	
+	Hash = InX ^ Hash;
+	Hash = InY ^ Hash;
+	Hash = InZ ^ Hash;
+	
+	Hash = ((Hash * Hash) * FInteger_60493) * Hash;
+	
+	return FSingle_HashToFloat * FSingle::Convert(Hash);
+}
+
+#if SIMD_LEVEL == ESIMDLevel::SL_AVX512
+FSingle VECTORCALL GradientCoordinate(FInteger InSeed, FInteger InXI, FInteger InYI, FInteger InZI, FSingle InX, FSingle InY, FSingle InZ)
+{
+	FInteger Hash = Hash(InSeed, InXI, InYI, InZI);
+	
+	FSingle GradientX = FSingle_GradientX.Permute(Hash);
+	FSingle GradientY = FSingle_GradientY.Permute(Hash);
+	FSingle GradientZ = FSingle_GradientZ.Permute(Hash);
+	
+	return InX.MultiplyAdd(GradientX, InY.MultiplyAdd(GradientY, (InZ * GradientZ)));
+}
+#else
+FSingle VECTORCALL GradientCoordinate(FInteger InSeed, FInteger InXI, FInteger InYI, FInteger InZI, FSingle InX, FSingle InY, FSingle InZ)
+{
+	FInteger Hash = Hash(InSeed, InXI, InYI, InZI);
+	FInteger HashA13 = Hash & FInteger_13;
+	
+	FMask L8 = HashA13 < FInteger_8;
+	FSingle U = FMath::Lerp(InY, InX, L8);
+	
+	FMask L4 = HashA3 < FInteger_2;
+	FMask H12O14 = FInteger_12 == HashA13;
+	FSingle V = FMath::Lerp(FMath::Lerp(InZ, InX, H12O14), InY, L4);
+	
+	FSingle H1 = FSingle::Cast(Hash << 31);
+	FSingle H2 = FSingle::Cast((Hash & FInteger_2) << 30);
+	
+	return (U ^ H1) + (V ^ H2);
+}
+#endif
+
+FSingle VECTORCALL WhiteNoiseSingle(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ)
+{
+	return ValueCoordinate(InSeed,
+		(FInteger::Convert(InX) ^ (FInteger::Convert(InX) >> 16)) * FInteger_PrimeX,
+		(FInteger::Convert(InY) ^ (FInteger::Convert(InY) >> 16)) * FInteger_PrimeY,
+		(FInteger::Convert(InZ) ^ (FInteger::Convert(InZ) >> 16)) * FInteger_PrimeZ);
+}
+
+FSingle VECTORCALL ValueSingle(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ)
+{
+	FSingle XS = FMath::FloorToFloat(InX);
+	FSingle YS = FMath::FloorToFloat(InY);
+	FSingle ZS = FMath::FloorToFloat(InZ);
+	
+	FInteger X0 = FInteger::Convert(XS) * FInteger_PrimeX;
+	FInteger Y0 = FInteger::Convert(YS) * FInteger_PrimeY;
+	FInteger Z0 = FInteger::Convert(ZS) * FInteger_PrimeZ;
+	
+	FInteger X1 = X0 + FInteger_PrimeX;
+	FInteger Y1 = Y0 + FInteger_PrimeY;
+	FInteger Z1 = Z0 + FInteger_PrimeZ;
+	
+	XS = InterpQuintic(InX - XS);
+	YS = InterpQuintic(InY - YS);
+	ZS = InterpQuintic(InZ - ZS);
+	
+	return FMath::Lerp(
+		FMath::Lerp(
+			FMath::Lerp(ValueCoordinate(InSeed, X0, Y0, Z0), ValueCoordinate(InSeed, X1, Y0, Z0), XS),
+			FMath::Lerp(ValueCoordinate(InSeed, X0, Y1, Z0), ValueCoordinate(InSeed, X1, Y1, Z0), XS), YS),
+		FMath::Lerp(
+			FMath::Lerp(ValueCoordinate(InSeed, X0, Y0, Z1), ValueCoordinate(InSeed, X1, Y0, Z1), XS),
+			FMath::Lerp(ValueCoordinate(InSeed, X0, Y1, Z1), ValueCoordinate(InSeed, X1, Y1, Z1), XS), YS), ZS);
+}
+
+FSingle VECTORCALL PerlinSingle(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ)
+{
+	FSingle XS = FMath::FloorToFloat(InX);
+	FSingle YS = FMath::FloorToFloat(InY);
+	FSingle ZS = FMath::FloorToFloat(InZ);
+	
+	FInteger X0 = FInteger::Convert(XS) * FInteger_PrimeX;
+	FInteger Y0 = FInteger::Convert(YS) * FInteger_PrimeY;
+	FInteger Z0 = FInteger::Convert(ZS) * FInteger_PrimeZ;
+	
+	FInteger X1 = X0 + FInteger_PrimeX;
+	FInteger Y1 = Y0 + FInteger_PrimeY;
+	FInteger Z1 = Z0 + FInteger_PrimeZ;
+	
+	FSingle XF0 = XS = InX - XS;
+	FSingle YF0 = YS = InY - YS;
+	FSingle ZF0 = ZS = InZ - ZS;
+	
+	FSingle XF1 = XF0 - FSingle_1;
+	FSingle YF1 = YF0 - FSingle_1;
+	FSingle ZF1 = ZF0 - FSingle_1;
+	
+	XS = InterpQuintic(XS);
+	YS = InterpQuintic(YS);
+	ZS = InterpQuintic(ZS);
+	
+	return FMath::Lerp(
+		FMath::Lerp(
+			FMath::Lerp(GradientCoordinate(InSeed, X0, Y0, Z0, XF0, YF0, ZF0), GradientCoordinate(InSeed, X1, Y0, Z0, XF1, YF0, ZF0), XS),
+			FMath::Lerp(GradientCoordinate(InSeed, X0, Y1, Z0, XF0, YF1, ZF0), GradientCoordinate(InSeed, X1, Y1, Z0, XF1, YF1, ZF0), XS), YS),
+		FMath::Lerp(
+			FMath::Lerp(GradientCoordinate(InSeed, X0, Y0, Z1, XF0, YF0, ZF1), GradientCoordinate(InSeed, X1, Y0, Z1, XF1, YF0, ZF1), XS),
+			FMath::Lerp(GradientCoordinate(InSeed, X0, Y1, Z1, XF0, YF1, ZF1), GradientCoordinate(InSeed, X1, Y1, Z1, XF1, YF1, ZF1), XS), YS), ZS);
+}
+
+FSingle VECTORCALL SimplexSingle(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ)
+{
+	FSingle F = FSingle_F3 * ((InX + InY) + InZ);
+	FSingle X0 = FMath::FloorToFloat(InX + F);
+	FSingle Y0 = FMath::FloorToFloat(InY + F);
+	FSingle Z0 = FMath::FloorToFloat(InZ + F);
+	
+	FInteger I = FInteger::Convert(X0) * FInteger_PrimeX;
+	FInteger J = FInteger::Convert(Y0) * FInteger_PrimeY;
+	FInteger K = FInteger::Convert(Z0) * FInteger_PrimeZ;
+	
+	FSingle G = FSingle_G3 * ((X0 + Y0) + Z0);
+	X0 = InX - (X0 - G);
+	Y0 = InY - (Y0 - G);
+	Z0 = InZ - (Z0 - G);
+	
+	FMask X0GEY0 = X0 >= Y0;
+	FMask Y0GEZ0 = Y0 >= Z0;
+	FMask Z0GEZ0 = X0 >= Z0;
+	
+	FMask I1 = X0GEY0 & X0GEZ0;
+	FMask J1 = !(X0GEY0 & Y0GEZ0);
+	FMask K1 = !(X0GEZO & !Y0GEZ0);
+	
+	FMask I2 = X0GEY0 | X0GEZ0;
+	FMask J2 = !X0GEY0 | Y0GEZ0;
+	FMask K2 = !(X0GEZ0 & Y0GEZ0);
+	
+	FSingle X1 = I1.MaskSubtract(X0, FSingle_1) + FSingle_G3;
+	FSingle Y1 = J1.MaskSubtract(Y0, FSingle_1) + FSingle_G3;
+	FSingle Z1 = K1.MaskSubtract(Z0, FSingle_1) + FSingle_G3;
+	
+	FSingle X2 = I2.MaskSubtract(X0, FSingle_1) + FSingle_F3;
+	FSingle Y2 = J2.MaskSubtract(Y0, FSingle_1) + FSingle_F3;
+	FSingle Z2 = K2.MaskSubtract(Z0, FSingle_1) + FSingle_F3;
+	
+	FSingle X3 = X0 + FSingle_G33;
+	FSingle Y3 = Y0 + FSingle_G33;
+	FSingle Z3 = Z0 + FSingle_G33;
+	
+	//FSingle T0 = 
+	
+	FMask N0 = T0 >= FSingle_0;
+	FMask N1 = T1 >= FSingle_0;
+	FMask N2 = T2 >= FSingle_0;
+	FMask N3 = T3 >= FSingle_0;
+	
+	T0 = T0 * T0;
+	T1 = T1 * T1;
+	T2 = T2 * T2;
+	T3 = T3 * T3;
+	
+	FSingle V0 = (T0 * T0) * GradientCoordinate(InSeed, I, J, K, X0, Y0, Z0);
+	FSingle V1 = (T1 * T1) * GradientCoordinate(InSeed, I1.MaskAdd(I, FInteger_PrimeX), J1.MaskAdd(J, FInteger_PrimeY), K1.MaskAdd(K, FInteger_PrimeZ), X1, Y1, Z1);
+	FSingle V2 = (T2 * T2) * GradientCoordinate(InSeed, I2.MaskAdd(I, FInteger_PrimeX), J2.MaskAdd(J, FInteger_PrimeY), K2.MaskAdd(K, FInteger_PrimeZ), X2, Y2, Z2);
+	FSingle V3 = N3.Mask((T3 * T3) * GradientCoordinate(InSeed, I + FInteger_PrimeX, J + FInteger_PrimeY, K + FInteger_PrimeZ), X3, Y3, Z3);
+	
+	return FSingle_32 * N0.MaskAdd(N1.MaskAdd(N2.MaskAdd(V3, V2), V1), V0);
+}
+
+FSingle VECTORCALL CubicSingle(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ)
+{
+	FSingle XF1 = FMath::FloorToFloat(InX);
+	FSingle YF1 = FMath::FloorToFloat(InY);
+	FSingle ZF1 = FMath::FloorToFloat(InZ);
+	
+	FInteger X1 = FInteger::Convert(XF1) * FInteger_PrimeX;
+	FInteger Y1 = FInteger::Convert(YF1) * FInteger_PrimeY;
+	FInteger Z1 = FInteger::Convert(ZF1) * FInteger_PrimeZ;
+	
+	FInteger X0 = X1 - FInteger_PrimeX;
+	FInteger Y0 = Y1 - FInteger_PrimeY;
+	FInteger Z0 = Z1 - FInteger_PrimeZ;
+	
+	FInteger X2 = X1 + FInteger_PrimeX;
+	FInteger Y2 = Y2 + FInteger_PrimeY;
+	FInteger Z2 = Z2 + FInteger_PrimeZ;
+	
+	FInteger X3 = X2 + FInteger_PrimeX;
+	FInteger Y3 = Y2 + FInteger_PrimeY;
+	FInteger Z3 = Z2 + FInteger_PrimeZ;
+	
+	FSingle XS = InX - XF1;
+	FSingle YS = InY - YF1;
+	FSingle ZS = InZ - ZF1;
+	
+	return SIMDf_MUL(CubicLerp(
+		CubicLerp(
+			CubicLerp(ValueCoordinate(InSeed, X0, Y0, Z0), ValueCoordinate(InSeed, X1, Y0, Z0), ValueCoordinate(InSeed, X2, Y0, Z0), ValueCoordinate(InSeed, X3, Y0, Z0), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y1, Z0), ValueCoordinate(InSeed, X1, Y1, Z0), ValueCoordinate(InSeed, X2, Y1, Z0), ValueCoordinate(InSeed, X3, Y1, Z0), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y2, Z0), ValueCoordinate(InSeed, X1, Y2, Z0), ValueCoordinate(InSeed, X2, Y2, Z0), ValueCoordinate(InSeed, X3, Y2, Z0), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y3, Z0), ValueCoordinate(InSeed, X1, Y3, Z0), ValueCoordinate(InSeed, X2, Y3, Z0), ValueCoordinate(InSeed, X3, Y3, Z0), XS),
+			YS),
+		CubicLerp(
+			CubicLerp(ValueCoordinate(InSeed, X0, Y0, Z1), ValueCoordinate(InSeed, X1, Y0, Z1), ValueCoordinate(InSeed, X2, Y0, Z1), ValueCoordinate(InSeed, X3, Y0, Z1), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y1, Z1), ValueCoordinate(InSeed, X1, Y1, Z1), ValueCoordinate(InSeed, X2, Y1, Z1), ValueCoordinate(InSeed, X3, Y1, Z1), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y2, Z1), ValueCoordinate(InSeed, X1, Y2, Z1), ValueCoordinate(InSeed, X2, Y2, Z1), ValueCoordinate(InSeed, X3, Y2, Z1), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y3, Z1), ValueCoordinate(InSeed, X1, Y3, Z1), ValueCoordinate(InSeed, X2, Y3, Z1), ValueCoordinate(InSeed, X3, Y3, Z1), XS),
+			YS),
+		CubicLerp(
+			CubicLerp(ValueCoordinate(InSeed, X0, Y0, Z2), ValueCoordinate(InSeed, X1, Y0, Z2), ValueCoordinate(InSeed, X2, Y0, Z2), ValueCoordinate(InSeed, X3, Y0, Z2), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y1, Z2), ValueCoordinate(InSeed, X1, Y1, Z2), ValueCoordinate(InSeed, X2, Y1, Z2), ValueCoordinate(InSeed, X3, Y1, Z2), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y2, Z2), ValueCoordinate(InSeed, X1, Y2, Z2), ValueCoordinate(InSeed, X2, Y2, Z2), ValueCoordinate(InSeed, X3, Y2, Z2), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y3, Z2), ValueCoordinate(InSeed, X1, Y3, Z2), ValueCoordinate(InSeed, X2, Y3, Z2), ValueCoordinate(InSeed, X3, Y3, Z2), XS),
+			YS),
+		CubicLerp(
+			CubicLerp(ValueCoordinate(InSeed, X0, Y0, Z3), ValueCoordinate(InSeed, X1, Y0, Z3), ValueCoordinate(InSeed, X2, Y0, Z3), ValueCoordinate(InSeed, X3, Y0, Z3), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y1, Z3), ValueCoordinate(InSeed, X1, Y1, Z3), ValueCoordinate(InSeed, X2, Y1, Z3), ValueCoordinate(InSeed, X3, Y1, Z3), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y2, Z3), ValueCoordinate(InSeed, X1, Y2, Z3), ValueCoordinate(InSeed, X2, Y2, Z3), ValueCoordinate(InSeed, X3, Y2, Z3), XS),
+			CubicLerp(ValueCoordinate(InSeed, X0, Y3, Z3), ValueCoordinate(InSeed, X1, Y3, Z3), ValueCoordinate(InSeed, X2, Y3, Z3), ValueCoordinate(InSeed, X3, Y3, Z3), XS),
+			YS),
+		ZS), FSingle_CubicBounding);
+}
+
+struct FGradientCoordinate
+{
+public:
+	FInteger Hash;
+	FSingle X;
+	FSingle Y;
+	FSingle Z;
+	
+	FGradientCoordinate(FSingle InX, FSingle InY, FSingle InZ)
+	{
+		Hash = HashHB(InX, InY, InZ);
+		
+		X = FSingle::Convert(Hash & FInteger_Bit10Mask) - FSingle_511_5;
+		Y = FSingle::Convert((Hash >> 10) & FInteger_Bit10Mask) - FSingle_511_5;
+		Z = FSingle::Convert((Hash >> 20) & FInteger_Bit10Mask) - FSingle_511_5;
+	}
+};
+
+void VECTORCALL GradientPerturbSingle(FInteger InSeed, FSingle InPerturbAmplitude, FSingle InPerturbFrequency, FSingle& InOutX, FSingle& InOutY, FSingle& InOutZ)
+{
+	FSingle XF = InOutX * InPerturbFrequency;
+	FSingle YF = InOutY * InPerturbFrequency;
+	FSingle ZF = InOutZ * InPerturbFrequency;
+	
+	FSingle XS = FMath::Floor(XF);
+	FSingle YS = FMath::Floor(YF);
+	FSingle ZS = FMath::Floor(ZF);
+	
+	FInteger X0 = FInteger::Convert(XS) * FInteger_PrimeX;
+	FInteger Y0 = FInteger::Convert(YS) * FInteger_PrimeY;
+	FInteger Z0 = FInteger::Convert(ZS) * FInteger_PrimeZ;
+	
+	FInteger X1 = X0 + FInteger_PrimeX;
+	FInteger Y1 = Y1 + FInteger_PrimeY;
+	FInteger Z1 = Z1 + FInteger_PrimeZ;
+	
+	XS = InterpQuintic(XF - XS);
+	YS = InterpQuintic(YF - YS);
+	ZS = InterpQuintic(ZF - ZS);
+	
+	FGradientCoordinate G000(0,0,0);
+	FGradientCoordinate G001(0,0,1);
+	FGradientCoordinate G010(0,1,0);
+	FGradientCoordinate G011(0,1,1);
+	FGradientCoordinate G100(1,0,0);
+	FGradientCoordinate G101(1,0,1);
+	FGradientCoordinate G110(1,1,0);
+	FGradientCoordinate G111(1,1,1);
+	
+	FSingle X0X = FMath::Lerp(FMath::Lerp(G000.X, G100.X, XS), FMath::Lerp(G010.X, G110.X, XS), YS);
+	FSingle Y0Y = FMath::Lerp(FMath::Lerp(G000.Y, G100.Y, XS), FMath::Lerp(G010.Y, G110.Y, XS), YS);
+	FSingle Z0Y = FMath::Lerp(FMath::Lerp(G000.Z, G100.Z, XS), FMath::Lerp(G010.Z, G110.Z, XS), YS);
+	
+	FSingle X1X = FMath::Lerp(FMath::Lerp(G001.X, G101.X, XS), FMath::Lerp(G011.X, G111.X, XS), YS);
+	FSingle Y1Y = FMath::Lerp(FMath::Lerp(G001.Y, G101.Y, XS), FMath::Lerp(G011.Y, G111.Y, XS), YS);
+	FSingle Z1Y = FMath::Lerp(FMath::Lerp(G001.Z, G101.Z, XS), FMath::Lerp(G011.Z, G111.Z, XS), YS);
+	
+	InOutX = FMath::Lerp(X0Y, X1Y, ZS).MultiplyAdd(InPerturbAmplitude, InOutX);
+	InOutY = FMath::Lerp(Y0Y, Y1Y, ZS).MultiplyAdd(InPerturbAmplitude, InOutY);
+	InOutZ = FMath::Lerp(Z0Z, Z1Y, ZS).MultiplyAdd(InPerturbAmplitude, InOutZ);
+}
+
+ctor(ESIMDLevel InSIMDLevel, int32 InSeed)
+{
+	Seed = InSeed;
+	FractalBounding = CalculateFractalBounding(Octaves, Gain);
+	PerturbFractalBounding = CalculateFractalBounding(PerturbOctaves, PerturbGain);
+	InitializeValues();
+	SIMDLevel = InSIMDLevel;
+}
+
+int32 GetAlignedSize(int32 InSize)
+{
+#ifdef FN_ALIGNED_SETS
+	if((InSize & (VectorSize - 1)) != 0)
+	{
+		InSize &= ~(VectorSize - 1);
+		InSize += VectorSize;
+	}
+#endif
+
+	return InSize;
+}
+
+TArray<float> GetEmptySet(int32 InSize)
+{
+	InSize = GetAlignedSize(InSize);
+	
+	TArray<float> Result;
+	Result.Reserve(InSize);
+	
+	return Result;
+}
+
+void AxisReset(FInteger& InOutX, FInteger& InOutY, FInteger& InOutZ, int32 InSizeZ, int32 InStart)
+{
+	for(auto i = InSizeZ * InStart; i < VectorSize; i += InSizeZ)
+	{
+		FMask ResetZ = InOutZ > EndZV;
+		InOutY = ResetZ.MaskAdd(InOutY, FInteger_1);
+		InOutZ = ResetZ.MaskSubtract(InOutZ, InSize.Z);
+		
+		FMask ResetY = InOutY > EndYV;
+		InOutX = ResetY.MaskAdd(InOutX, FInteger_1);
+		InOutY = ResetY.MaskSubtract(InOutY, InSize.Y);
+	}
+}
+
+void StoreLastResult() { }
+
+
+
+void InitializePerturbValues()
+{
+	switch(PerturbType)
+	{
+	case EPerturbType::PT_None:
+		break;
+		
+	case EPerturbType::PT_GradientNormalize:
+	case EPerturbType::PT_GradientFractalNormalize:
+	case EPerturbType::PT_Normalize:
+		PerturbNormalizeLengthV = PerturbNormalizeLength * Frequency;
+		
+	case EPerturbType::PT_Gradient:
+		PerturbAmplitudeV = PerturbAmplitude;
+		PerturbFrequencyV = PerturbFrequency;
+		break;
+		
+	case EPerturbType::PT_GradientFractal:
+		PerturbAmplitudeV = PerturbAmplitude * FractalBounding;
+		PerturbFrequencyV = PerturbFrequency;
+		PerturbLacunarityV = PerturbLacunarity;
+		PerturbGainV = PerturbGain;
+	}
+}
+
+void PerturbSwitch()
+{
+	switch(PerturbType)
+	{
+	case EPerturbType::PT_None;
+		break;
+		
+	case EPerturbType::PT_Gradient:
+	case EPerturbType::PT_GradientNormalize:
+		GradientPerturbSingle(SeedV - FInteger_1, PerturbAmplitudeV, PerturbFrequencyV, XF, YF, ZF);
+		break;
+		
+	case EPerturbType::PT_GradientFractal:
+		{
+			FInteger SeedF = SeedV - FInteger_1;
+			FSingle FrequencyF = PerturbFrequencyV;
+			FSingle AmplitudeF = PerturbAmplitudeV;
+			GradientPerturbSingle(SeedF, AmplitudeF, FrequencyF, XF, YF, ZF);
+			int32 OctaveIndex = 0;
+			while(++OctaveIndex < PerturbOctaves)
+			{
+				FrequencyF = FrequencyF * PerturbLacunarityV;
+				SeedF = SeedF - FInteger_1;
+				AmplitudeF = AmplitudeF * PerturbGainV;
+				GradientPerturbSingle(SeedF, AmplitudeF, FrequencyF, XF, YF, ZF);
+			}
+		}
+		break;
+		
+	case EPerturbType::PT_Normalize:
+		{
+			FSingle InverseMagnitude = PerturbNormalizeLengthV * FMath::InvSqrt(XF.MultiplyAdd(XF, YF.MultiplyAdd(YF, ZF * ZF)));
+			XF = XF * InverseMagnitude;
+			YF = YF * InverseMagnitude;
+			ZF = ZF * InverseMagnitude;
+		}
+		break;
+	
+	case EPerturbType::PT_GradientFractalNormalize:
+		{
+			FInteger SeedF = SeedV - FInteger_1;
+			FSingle FrequencyF = PerturbFrequencyV;
+			FSingle AmplitudeF = PerturbAmplitudeV;
+			GradientPerturbSingle(SeedF, AmplitudeF, FrequencyF, XF, YF, ZF);
+			int32 OctaveIndex = 0;
+			while(++OctaveIndex < PerturbOctaves)
+			{
+				FrequencyF = FrequencyF * PerturbLacunarityV;
+				SeedF = SeedF * FInteger_1;
+				AmplitudeF = AmplitudeF * PerturbGainV;
+				GradientPerturbSingle(SeedF, AmplitudeF, FrequencyF, XF, YF, ZF);
+			}
+			FSingle InverseMagnitude = PerturbNormalizeLengthV * FMath::InvSqrt(XF.MultiplyAdd(XF, YF.MultiplyAdd(YF, ZF * ZF)));
+			XF = XF * InverseMagnitude;
+			YF = YF * InverseMagnitude;
+			ZF = ZF * InverseMagnitude;
+		}
+		break;
+	}
+}
+
+void SetBuilder()
+{
+	if((Size.Z & (VectorSize - 1)) == 0)
+	{
+		FInteger BaseY = Start.Y;
+		FInteger BaseZ = FInteger_Incremental + Start.Z;
+		
+		FInteger X = Start.X;
+		
+		int32 Index = 0;
+		for(auto IX = 0; IX < Size.X; IX++)
+		{
+			FSingle XF = FSingle::Convert(X) * FrequencyXV;
+			FInteger Y = BaseY;
+			for(auto IY = 0; IY < Size.Y; IY++)
+			{
+				FSingle YF = FSingle::Convert(Y) * FrequencyYV;
+				FInteger Z = BaseZ;
+				FSingle ZF = FSingle::Convert(Z) * FrequencyZV;
+				
+				PerturbSwitch();
+				
+				FSingle Result;
+				
+				// SIMDF_STORE(&InOutNoiseSet[Index], Result);
+				
+				int32 IZ = VectorSize;
+				while(IZ < Size.Z)
+				{
+					Z = Z + FInteger_VectorSize;
+					Index += VectorSize;
+					IZ += VectorSize;
+					ZF = FSingle::Convert(Z) * FrequencyZV;
+					PerturbSwitch();
+					// SIMDF_STORE(&InOutNoiseSet[Index], Result);
+				}
+				Index += VectorSize;
+				Y = Y + FInteger_1;
+			}
+			X = X + FInteger_1;
+		}
+	}
+	else
+	{
+		FInteger SizeYV = Size.Y;
+		FInteger SizeZV = Size.Z;
+		
+		FInteger EndYV = Start.Y + Size.Y - 1;
+		FInteger EndZV = Start.Z + Size.Z - 1;
+		
+		FInteger X = Start.X;
+		FInteger Y = Start.Y;
+		FInteger Z = Start.Z + FInteger_Incremental;
+		
+		AxisReset(Size.Z, 1);
+		
+		int32 Index = 0;
+		int32 MaxIndex = Size.X * Size.Y * Size.Z;
+		
+		FSingle XF, YF, ZF, Result;
+		
+		for(; Index < MaxIndex - VectorSize; Index += VectorSize)
+		{
+			XF = FSingle::Convert(X) * FrequencyXV;
+			YF = FSingle::Convert(Y) * FrequencyYV;
+			ZF = FSingle::Convert(Z) * FrequencyZV;
+			PerturbSwitch();
+			// SIMD_STORE(&InOutNoiseSet[Index], Result);
+			Z = Z + FInteger_VectorSize;
+			AxisReset(Size.Z, 0);
+		}
+		XF = FSingle::Convert(X) * FrequencyXV;
+		YF = FSingle::Convert(Y) * FrequencyYV;
+		ZF = FSingle::Convert(Z) * FrequencyZV;
+		PerturbSwitch();
+		
+		StoreLastResult(&InOutNoiseSet[Index], Result);
+	}
+}
+
+FSingle FbmSingle()
+{
+	FInteger SeedF = SeedV;
+	Result = f_Single(SeedF, XF, YF, ZF);
+	FSingle AmplitudeF = FSingle_1;
+	int32 OctaveIndex = 0;
+	while(++OctaveIndex < OctaveCount)
+	{
+		XF = XF * LacunarityV;
+		YF = YF * LacunarityV;
+		ZF = ZF * LacunarityV;
+		SeedF = SeedF + FInteger_1;
+		AmplitudeF = AmplitudeF * GainV;
+		Result = f_Single(SeedF, XF, YF, ZF).MultiplyAdd(AmplitudeF, Result);
+	}
+	Result = Result * FractalBoundingV;
+}
+
+FSingle BillowSingle()
+{
+	FInteger SeedF = SeedV;
+	Result = FMath::Abs(f_Single(SeedF, XF, YF, ZF)).MultiplySubtract(FSingle_2, FSingle_1);
+	FSingle AmplitudeF = FSingle_1;
+	int32 OctaveIndex = 0;
+	while(++OctaveIndex < OctaveCount)
+	{
+		XF = XF * LacunarityV;
+		YF = YF * LacunarityV;
+		ZF = ZF * LacunarityV;
+		SeedF = SeedF + FInteger_1;
+		AmplitudeF = AmplitudeF * GainV;
+		Result = FMath::Abs(f_Single(SeedF, XF, YF, ZF)).MultiplySubtract(FSingle_2, FSingle_1).MultiplyAdd(AmplitudeF, Result);
+	}
+	Result = Result * FractalBoundingV;
+}
+
+FSingle RigidMultiSingle()
+{
+	FInteger SeedF = InSeed;
+	Result = FSingle_1 - FMath::Abs(func_Single(SeedF, XF, YF, ZF));
+	int32 OctaveIndex = 0;
+	while(++OctaveIndex < OctaveCount)
+	{
+		XF = XF * LacunarityV;
+		YF = YF * LacunarityV;
+		ZF = ZF * LacunarityV;
+		SeedF = SeedF + FInteger_1;
+		AmplitudeF = AmplitudeF * GainV;
+		Result = (FSingle_1 - FMath::Abs(func_Single(SeedF, XF, YF, ZF)).MultiplyAdd(AmplitudeF, Result);
+	}
+	
+	return Result;
+}
+
+void Fill_func_Set(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, float InScaleModifier)
+{
+	SIMD_ZERO_ALL();
+	
+	FInteger SeedV = Seed;
+	
+	InitializePerturbValues();
+	
+	InScaleModifier *= Frequency;
+	
+	FSingle FrequencyXV = InScaleModifier * Scale.X;
+	FSingle FrequencyYV = InScaleModifier * Scale.Y;
+	FSingle FrequencyZV = InScaleModifier * Scale.Z;
+	
+	SetBuilder(Result = Func_Single(SeedV, XF, YF, ZF);
+	
+	SIMD_ZERO_ALL();
+}
+
+void Fill_func_FractalSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, float InScaleModifier)
+{
+	SIMD_ZERO_ALL();
+	
+	FInteger SeedV = Seed;
+	FSingle LacunarityV = Lacunarity;
+	FSingle GainV = Gain;
+	FSingle FractalBoundingV = FractalBounding;
+	
+	InitializePerturbValues();
+	
+	FSingle FrequencyXV = InScaleModifier * Scale.X;
+	FSingle FrequencyYV = InScaleModifier * Scale.Y;
+	FSingle FrequencyZV = InScaleModifier * Scale.Z;
+	
+	switch(FractalType)
+	{
+		case FBM:
+			SetBuilder(FbmSingle(func));
+			break;
+			
+		case Billow:
+			SetBuilder(BillowSingle(func));
+			break;
+			
+		case RigidMulti:
+			SetBuilder(RigidMultiSingle(func));
+			break;
+	}
+	SIMD_ZERO_ALL();
+}
+
+void Fill_func_Set(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, FVector InOffset)
+{
+	check(InOutVectorSet.Size >= 0);
+	SIMD_ZERO_ALL();
+	
+	FInteger SeedV = Seed;
+	FSingle FrequencyXV = Frequency * Scale.X;
+	FSingle FrequencyYV = Frequency * Scale.Y;
+	FSingle FrequencyZV = Frequency * Scale.Z;
+	FSingle OffsetXV = InOffset.X * FrequencyXV;
+	FSingle OffsetYV = InOffset.Y * FrequencyYV;
+	FSingle OffsetZV = InOffset.Z * FrequencyZV;
+	
+	InitializePerturbValues();
+	
+	int32 Index = 0;
+	int32 LoopMax = InOutVectorSet.Size;
+	
+	VectorSetBuilder(Result = func_single(SeedV, XF, YF, ZF);
+	SIMD_ZERO_ALL();
+}
+
+void Fill_func_FractalSet(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, FVector InOffset)
+{
+	check(InOutVectorSet.Size >= 0);
+	SIMD_ZERO_ALL();
+	
+	FInteger SeedV = Seed;
+	FSingle LacunarityV = Lacunarity;
+	FSingle GainV = Gain;
+	FSingle FractalBoundingV = FractalBounding;
+	FSingle FrequencyXV = Frequency * Scale.X;
+	FSingle FrequencyYV = Frequency * Scale.Y;
+	FSingle FrequencyZV = Frequency * Scale.Z;
+	FSingle OffsetXV = InOffset.X * FrequencyXV;
+	FSingle OffsetYV = InOffset.Y * FrequencyYV;
+	FSingle OffsetZV = InOffset.Z * FrequencyZV;
+	
+	InitializePerturbValues();
+	
+	int32 Index = 0;
+	int32 LoopMax = InOutVectorSet.Size;
+	
+	switch(FractalType)
+	{
+		case FBM:
+			VectorSetBuilder(FBMSingle(func));
+			break;
+			
+		case Billow:
+			VectorSetBuilder(BillowSingle(func));
+			break;
+			
+		case RigidMulti:
+			VectorSetBuilder(RigidMultiSingle(func));
+			break;
+	}
+	
+	SIMD_ZERO_ALL();
+}
+
+void FillWhiteNoiseSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, float InScaleModifier)
+{
+	SIMD_ZERO_ALL();
+	FInteger SeedV = Seed;
+	
+	if((InSize.Z & (VectorSize - 1)) == 0)
+	{
+		FInteger X = InStart.X * FInteger_PrimeX;
+		FInteger BaseY = InStart.Y * FInteger_PrimeY;
+		FInteger BaseZ = InStart.Z * FInteger_PrimeZ;
+		
+		FInteger StepZ = FInteger_VectorSize * FInteger_PrimeZ;
+		
+		int32 Index = 0;
+		for(auto IX = 0; IX < InSize.X; IX++)
+		{
+			FInteger Y = BaseY;
+			for(auto IY = 0; IY < InSize.Y; IY++)
+			{
+				FInteger Z = BaseZ;
+				// SIMDf_STORE(&InOutNoiseSet[Index], ValueCoordinate(SeedV, X, Y, Z));
+				
+				int32 IZ = VectorSize;
+				while(IZ < SizeZ)
+				{
+					Z = Z + StepZ;
+					Index += VectorSize;
+					IZ += VectorSize;
+					
+					// SIMDF_STORE(&InOutNoiseSet[Index], ValueCoordinate(SeedV, X, Y, Z));
+				}
+				
+				Index += VectorSize;
+				Y = Y + FInteger_PrimeY;
+			}
+			X = X + FInteger_PrimeX;
+		}
+	}
+	else
+	{
+		FInteger SizeYV = InSize.Y;
+		FInteger SizeZV = InSize.Z;
+		
+		FInteger EndYV = InStart.Y + InSize.Y - 1;
+		FInteger EndZV = InStart.Z + InSize.Z - 1;
+		
+		FInteger X = InStart.X;
+		FInteger Y = InStart.Y;
+		FInteger Z = InStart.Z + FInteger_Incremental;
+		
+		AxisReset(SizeZ, 1);
+		
+		int32 Index = 0;
+		int32 MaxIndex = InSize.X * InSize.Y * InSize.Z;
+		
+		for(; Index < MaxIndex - VectorSize; Index += VectorSize)
+		{
+			// SIMDF_STORE(&InOutNoiseSet[Index], ValueCoordinate(SeedV, X * FInteger_PrimeX, Y * FInteger_PrimeY, Z * FInteger_PrimeZ);
+			Z = Z + FInteger_VectorSize;
+			AxisReset(InSize.Z, 0);
+		}
+		
+		FSingle Result = ValueCoordinate(SeedV, X * FInteger_PrimeX, Y * FInteger_PrimeY, Z * FInteger_PrimeZ);
+		StoreLastResult(&InOutNoiseSet[Index], Result);
+	}
+	SIMD_ZERO_ALL();
+}
+
+static FSingle EuclideanDistance(FSingle InX, FSingle InY, FSingle InZ)
+{
+	return InX.MultiplyAdd(InX, InY.MultiplyAdd(InY, InZ * InZ));
+}
+
+static FSingle ManhattanDistance(FSingle InX, FSingle InY, FSingle InZ)
+{
+	return FMath::Abs(InX) + FMath::Abs(InY) + FMath::Abs(InZ);
+}
+
+static FSingle NaturalDistance(FSingle InX, FSingle InY, FSingle InZ)
+{
+	return EuclideanDistance(InX, InY, InZ) + ManhattanDistance(InX, InY, InZ);
+}
+
+static FSingle VECTORCALL CellularValue_distancefunc_Single(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ, FSingle InCellJitter)
+{
+	FSingle Distance = 999999.0f;
+	FSingle CellValue = FSingle::Undefined;
+	
+	FInteger XC = FInteger::Convert(InX) - FInteger_1;
+	FInteger YCBase = FInteger::Convert(InY) - FInteger_1;
+	FInteger ZCBase = FInteger::Convert(InZ) - FInteger_1;
+	
+	FSingle XCF = FSingle::Convert(XC);
+	FSingle YCFBase = FSingle::Convert(YCBase);
+	FSingle ZCFBase = FSingle::Convert(ZCBase);
+	
+	XC = XC * FInteger_PrimeX;
+	YCBase = YCBase * FInteger_PrimeY;
+	ZCBase = ZCBase * FInteger_PrimeZ;
+	
+	for(auto XI = 0; XI < 3; XI++)
+	{
+		FSingle YCF = YCFBase;
+		FInteger YC = YCBase;
+		for(auto YI = 0; YI < 3; YI++)
+		{
+			FSingle ZCF = ZCFBase;
+			FInteger ZC = ZCBase;
+			for(auto ZI = 0; ZI < 3; ZI++)
+			{
+				FInteger Hash = HashHB(InSeed, XC, YC, ZC);
+				FSingle XD = FSingle::Convert((Hash & FInteger_Bit10Mask)) - FSingle_511_5;
+				FSingle YD = FSingle::Convert((Hash >> 10 & FInteger_Bit10Mask)) - FSingle_511_5);
+				FSingle ZD = FSingle::Convert((Hash >> 20 & FInteger_Bit10Mask)) - FSingle_511_5);
+				
+				FSingle InverseMagnitude = InCellJitter * FMath::InvSqrt(XD.MultiplyAdd(XD, YD.MultiplyAdd(YD, (ZD * ZD))));
+				
+				XD = XD.MultiplyAdd(InverseMagnitude, XCF);
+				YD = YD.MultiplyAdd(InverseMagnitude, YCF);
+				ZC = ZC.MultiplyAdd(InverseMagnitude, ZCF);
+				
+				FSingle NewCellValue = FSingle_HashToFloat * FSingle::Convert(Hash);
+				FSingle NewDistance = distanceFunc_DISTANCE(XD, YD, ZD);
+				
+				FMask Closer = NewDistance < Distance;
+				
+				Distance = FMath::Min(NewDistance, Distance);
+				CellValue = FMath::Lerp(CellValue, NewCellValue, Closer);
+				
+				ZCF = ZCF + FSingle_1;
+				ZC = ZC + FInteger_PrimeZ;
+			}
+			YCF = YCF + FSingle_1;
+			YC = YC + FInteger_PrimeY;
+		}
+		XCF = XCF + FSingle_1;
+		XC = XC + FInteger_PrimeX;
+	}
+	
+	return CellValue;
+}
+
+struct FNoiseLookupSettings
+{
+public:
+	ENoiseType Type;
+	FSingle Frequency;
+	EFractalType FractalType;
+	int32 FractalOctaves;
+	FSingle FractalLacunarity;
+	FSingle FractalGain;
+	FSingle FractalBounding;
+};
+
+static FSingle VECTORCALL CellularLookup_distanceFunc_Single(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ, FSingle InCellJitter, const FNoiseLookupSettings& InNoiseLookupSettings)
+{
+	FSingle Distance = 999999.0f;
+	
+	FSingle CellX = FSingle::Undefined;
+	FSingle CellY = FSingle::Undefined;
+	FSingle CellZ = FSingle::Undefined;
+	
+	FInteger XC = FInteger::Convert(InX) - FInteger_1;
+	FInteger YCBase = FInteger::Convert(InY) - FInteger_1;
+	FInteger ZCBase = FInteger::Convert(InZ) - FInteger_1;
+	
+	FSingle XCF = FSingle::Convert(XC);
+	FSingle YCFBase = FSingle::Convert(YCBase);
+	FSingle ZCFBase = FSingle::Convert(ZCBase);
+	
+	XC = XC * FInteger_PrimeX;
+	YCBase = YCBase * FInteger_PrimeY;
+	ZCBase = ZCBase * FInteger_PrimeZ;
+	
+	for(auto XI = 0; XI < 3; XI++)
+	{
+		FSingle YCF = YCFBase;
+		FInteger YC = YCBase;
+		FSingle LocalX = XCF - InX;
+		for(auto YI = 0; YI < 3; YI++)
+		{
+			FSingle ZCF = ZCFBase;
+			FInteger ZC = ZCBase;
+			FSingle LocalY = YCF - Y;
+			for(auto ZI = 0; ZI < 3; ZI++)
+			{
+				FSingle LocalZ = ZCF - InZ;
+				
+				FInteger Hash = HashHB(InSeed, XC, YC, ZC);
+				FSingle XD = FSingle::Convert((Hash & FInteger_Bit10Mask)) - FSingle_511_5;
+				FSingle YD = FSingle::Convert((Hash >> 10 & FInteger_Bit10Mask)) - FSingle_511_5);
+				FSingle ZD = FSingle::Convert((Hash >> 20 & FInteger_Bit10Mask)) - FSingle_511_5);
+				
+				FSingle InverseMagnitude = InCellJitter * FMath::InvSqrt(XD.MultiplyAdd(XD, YD.MultiplyAdd(YD, (ZD * ZD))));
+				
+				FSingle CellXNew = XD * InverseMagnitude;
+				FSingle CellYNew = YD * InverseMagnitude;
+				FSingle CellZNew = ZD * InverseMagnitude;
+				
+				XD = CellXNew + LocalX;
+				YD = CellYNew + LocalY;
+				ZD = CellZNew + LocalZ;
+				
+				FSingle NewDistance = distancefunc_DISTANCE(XD, YD, ZD);
+				
+				FMask Closer = NewDistance < Distance;
+				
+				Distance = FMath::Min(NewDistance, Distance);
+				CellX = FMath::Lerp(CellX, CellXNew, Closer);
+				CellY = FMath::Lerp(CellY, CellYNew, Closer);
+				CellZ = FMath::Lerp(CellZ, CellZNew, Closer);
+				
+				ZCF = ZCF + FSingle_1;
+				ZC = ZC + FInteger_PrimeZ;
+			}
+			YCF = YCF + FSingle_1;
+			YC = YC + FInteger_PrimeY;
+		}
+		XCF = XCF + FSingle_1;
+		XC = XC + FInteger_PrimeX;
+	}
+	
+	FSingle XF = CellX * InNoiseLookupSettings.Frequency;
+	FSingle YF = CellY * InNoiseLookupSettings.Frequency;
+	FSingle ZF = CellZ * InNoiseLookupSettings.Frequency;
+	FSingle Result;
+	
+	switch(InNoiseLookupSettings.Type)
+	{
+		case Value:
+			Result = ValueSingle(InSeed, XF, YF, ZF);
+			break;
+			
+		case ValueFractal:
+			Result = CellularLookupFractalValue(Value);
+			break;
+			
+		case Perlin:
+			Result = PerlinSingle(InSeed, XF, YF, ZF);
+			break;
+			
+		case PerlinFractal:
+			Result = CellularLookupFractalValue(Perlin);
+			break;
+			
+		case Simplex:
+			Result = SimpleSingle(InSeed, XF, YF, ZF);
+			break;
+			
+		case SimplexFractal:
+			Result = CellularLookupFractalValue(Simplex);
+			break;
+			
+		case Cubic:
+			Result = CubicSingle(InSeed, XF, YF, ZF);
+			break;
+			
+		case CubicFractal:
+			Result = CellularLookupFractalValue(Cubic);
+			break;
+			
+		default:
+			break;
+	}
+	
+	return Result;
+}
+
+static FSingle VECTORCALL CellularDistance_distanceFunc_Single(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ, FSingle InCellJitter)
+{
+	FSingle Distance = 999999.0f;
+	
+	FInteger XC = FInteger::Convert(InX) - FInteger_1;
+	FInteger YCBase = FInteger::Convert(InY) - FInteger_1;
+	FInteger ZCBase = FInteger::Convert(InZ) - FInteger_1;
+	
+	FSingle XCF = FSingle::Convert(XC) - InX;
+	FSingle YCFBase = FSingle::Convert(YCBase) - InY;
+	FSingle ZCFBase = FSingle::Convert(ZCBase) - InZ;
+	
+	XC = XC * FInteger_PrimeX;
+	YCBase = YCBase * FInteger_PrimeY;
+	ZCBase = ZCBase * FInteger_PrimeZ;
+	
+	for(auto XI = 0; XI < 3; XI++)
+	{
+		FSingle YCF = YCFBase;
+		FInteger YC = YCBase;
+		for(auto YI = 0; YI < 3; YI++)
+		{
+			FSingle ZCF = ZCFBase;
+			FInteger ZC = ZCBase;
+			for(auto ZI = 0; ZI < 3; ZI++)
+			{
+				FInteger Hash = HashHB(InSeed, XC, YC, ZC);
+				FSingle XD = FSingle::Convert(Hash & FInteger_Bit10Mask) - FSingle_511_5;
+				FSingle YD = FSingle::Convert((Hash >> 10) & FInteger_Bit10Mask) - FSingle_511_5;
+				FSingle ZD = FSingle::Convert((Hash >> 20) & FInteger_Bit10Mask) - FSingle_511_5;
+				
+				FSingle InverseMagnitude = InCellJitter * FMath::InvSqrt(XD.MultiplyAdd(XD, YD.MultiplyAdd(YD, (ZD * ZD)));
+				
+				XD = XD.MultiplyAdd(InverseMagnitude, XCF);
+				YD = YD.MultiplyAdd(InverseMagnitude, YCF);
+				ZD = ZD.MultiplyAdd(InverseMagnitude, ZCF);
+				
+				FSingle NewDistance = distancefunc_DISTANCE(XD, YD, ZD);
+				
+				for(auto i = Index1; i > 0; i--)
+					Distance[i] = FMath::Max(FMath::Min(Distance[i], NewDistance, Distance[i - 1]);
+				
+				Distance[0] = FMath::Min(Distance[0], NewDistance);
+				
+				ZCF = ZCF + FSingle_1;
+				ZC = ZC + FInteger_PrimeZ;
+			}
+			YCF = YCF + FSingle_1;
+			YC = YC + FInteger_PrimeY;
+		}
+		XCF = XCF + FSingle_1;
+		XC = XC + FInteger_PrimeX;
+	}
+	
+	return Distance;
+}
+
+static FSingle VECTORCALL Cellular_returnFunc_distanceFunc_Single(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ, FSingle InCellJitter, int32 InIndex0, int32 InIndex1)
+{
+	FSingle Distance[FN_CELLULAR_INDEX_MAX + 1] = { 999999, 999999, 999999 };
+	
+	FInteger XC = FInteger::Convert(InX) - FInteger_1;
+	FInteger YCBase = FInteger::Convert(InY) - FInteger_1;
+	FInteger ZCBase = FInteger::Convert(InZ) - FInteger_1;
+	
+	FSingle XCF = FSingle::Convert(XC) - InX;
+	FSingle YCFBase = FSingle::Convert(YCBase) - InY;
+	FSingle ZCFBase = FSingle::Convert(ZCBase) - InZ;
+	
+	XC = XC * FInteger_PrimeX;
+	YCBase = YCBase * FInteger_PrimeY;
+	ZCBase = ZCBase * FInteger_PrimeZ;
+	
+	for(auto XI = 0; XI < 3; XI++)
+	{
+		FSingle YCF = YCFBase;
+		FInteger YC = YCBase;
+		for(auto YI = 0; YI < 3; YI++)
+		{
+			FSingle ZCF = ZCFBase;
+			FInteger ZC = ZCBase;
+			for(auto ZI = 0; ZI < 3; ZI++)
+			{
+				FInteger Hash = HashHB(InSeed, XC, YC, ZC);
+				FSingle XD = FSingle::Convert(Hash & FInteger_Bit10Mask) - FSingle_511_5;
+				FSingle YD = FSingle::Convert((Hash >> 10) & FInteger_Bit10Mask) - FSingle_511_5;
+				FSingle ZD = FSingle::Convert((Hash >> 20) & FInteger_Bit10Mask) - FSingle_511_5;
+				
+				FSingle InverseMagnitude = InCellJitter * FMath::InvSqrt(XD.MultiplyAdd(XD, YD.MultiplyAdd(YD, (ZD * ZD)));
+				
+				XD = XD.MultiplyAdd(InverseMagnitude, XCF);
+				YD = YD.MultiplyAdd(InverseMagnitude, YCF);
+				ZD = ZD.MultiplyAdd(InverseMagnitude, ZCF);
+				
+				FSingle NewDistance = distancefunc_DISTANCE(XD, YD, ZD);
+				
+				for(auto i = Index1; i > 0; i--)
+					Distance[i] = FMath::Max(FMath::Min(Distance[i], NewDistance, Distance[i - 1]);
+				
+				Distance[0] = FMath::Min(Distance[0], NewDistance);
+				
+				ZCF = ZCF + FSingle_1;
+				ZC = ZC + FInteger_PrimeZ;
+			}
+			YCF = YCF + FSingle_1;
+			YC = YC + FInteger_PrimeY;
+		}
+		XCF = XCF + FSingle_1;
+		XC = XC + FInteger_PrimeX;
+	}
+	
+	return returnFunc_RETURN(Distance[InIndex], Distance[InIndex1]);
+}
+
+static FSingle VECTORCALL CellularDistance2Cave(FInteger InSeed, FSingle InX, FSingle InY, FSingle InZ, FSingle InCellJitter, int32 InIndex0, int32 InIndex1)
+{
+	FSingle C0 = CellularDistance2Div_distancefunc_Single(InSeed, InX, InY, InZ, InCellJitter, InIndex0, InIndex1);
+	InX = InX + FSingle_0_5;
+	InY = InY + FSingle_0_5;
+	InZ = InZ + FSingle_0_5;
+	InSeed = InSeed + FSingle_1;
+	FSingle C1 = CellularDistance2Div_distancefunc_Single(InSeed, InX, InY, InZ, InCellJitter, InIndex0, InIndex1);
+	return FMath::Min(C0, C1);
+}
+
+void FillCellularSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, float InScaleModifier)
+{
+	SIMD_ZERO_ALL();
+	FInteger SeedV = Seed;
+	InitializePerturbValues();
+	
+	InScaleModifier *= Frequency;
+	
+	FSingle FrequencyXV = InScaleModifier * Scale.X;
+	FSingle FrequencyYV = InScaleModifier * Scale.Y;
+	FSingle FrequencyZV = InScaleModifier * Scale.Z;
+	FSignle CellJitterV = CellularJitter;
+	
+	FNoiseLookupSettings NoiseLookupSettings;
+	
+	switch(CellularReturnType)
+	{
+		case ECellularReturnType::CRT_CellValue:
+			CELLULAR_MULTI(Value);
+			break;
+			
+		case ECellularReturnType::CRT_Distance:
+			CELLULAR_MULTI(Distance);
+			break;
+		
+		case ECellularReturnType::CRT_Distance2:
+			CELLULAR_INDEX_MULTI(Distance2);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Add:
+			CELLULAR_INDEX_MULTI(Distance2Add);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Sub:
+			CELLULAR_INDEX_MULTI(Distance2Sub);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Mul:
+			CELLULAR_INDEX_MULTI(Distance2Mul);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Div:
+			CELLULAR_INDEX_MULTI(Distance2Div);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Cave:
+			CELLULAR_INDEX_MULTI(Distance2Cave);
+			break;
+			
+		case ECellularReturnType::CRT_NoiseLookup:
+			NoiseLookupSettings.Type = CellularNoiseLookupType;
+			NoiseLookupSettings.Frequency = CellularNoiseLookupFrequency;
+			NoiseLookupSettings.FractalType = FractalType;
+			NoiseLookupSettings.FractalOctaves = Octaves;
+			NoiseLookupSettings.FractalLacunarity = Lacunarity;
+			NoiseLookupSettings.FractalGain = Gain;
+			NoiseLookupSettings.FractalBounding = FractalBounding;
+			
+			switch(CellularDistanceFunction)
+			{
+				case ECellularDistanceFunction::CDF_Euclidean:
+					SetBuilder(Result = CellularLookupEuclideanSingle(SeedV, XF, YF, ZF, CellJitterV, NoiseLookupSettings));
+					break;
+					
+				case ECellularDistanceFunction::CDF_Manhattan:
+					SetBuilder(Result = CellularLookupManhattanSingle(SeedV, XF, YF, ZF, CellJitterV, NoiseLookupSettings));
+					break;
+					
+				case ECellularDistanceFunction::CDF_Natural:
+					SetBuilder(Result = CellularLookupNaturalSingle(SeedV, XF, YF, ZF, CellJitterV, NoiseLookupSettings));
+					break;
+			}
+	}
+	SIMD_ZERO_ALL();
+}
+
+void FillCellularSet(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, FVector InOffset)
+{
+	check(InOutVectorSet.Size >= 0);
+	SIMD_ZERO_ALL();
+	
+	FInteger SeedV = Seed;
+	
+	FSingle FrequencyXV = Frequency * ScaleX;
+	FSingle FrequencyYV = Frequency * ScaleY;
+	FSingle FrequencyZV = Frequency * ScaleZ;
+	
+	FSingle OffsetXV = OffsetX * FrequencyXV;
+	FSingle OffsetYV = OffsetY * FrequencyYV;
+	FSingle OffsetZV = OffsetZ * FrequencyZV;
+	
+	FSingle CellJitterV = CellularJitter;
+	
+	InitializePerturbValues();
+	
+	int32 Index = 0;
+	int32 LoopMax = InOutVectorSet.Size;
+	FNoiseLookupSettings NoiseLookupSettings;
+	
+	switch(CellularReturnType)
+	{
+		case ECellularReturnType::CRT_CellValue:
+			CellularMultiVector(Value);
+			break;
+			
+		case ECellularReturnType::CRT_Distance:
+			CellularMultiVector(Distance);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2:
+			CellularIndexMultiVector(Distance2);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Add;
+			CellularIndexMultiVector(Distance2Add);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Sub:
+			CellularIndexMultiVector(Distance2Sub);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Mul:
+			CellularIndexMultiVector(Distance2Mul);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Div:
+			CellularIndexMultiVector(Distance2Div);
+			break;
+			
+		case ECellularReturnType::CRT_Distance2Cave:
+			CellularIndexMultiVector(Distance2Cave);
+			break;
+			
+		case ECellularReturnType::CRT_NoiseLookup:
+			NoiseLookupSettings.Type = CellularNoiseLookupType;
+			NoiseLookupSettings.Frequency = CellularNoiseLookupFrequency;
+			NoiseLookupSettings.FractalType = FractalType;
+			NoiseLookupSettings.FractalOctaves = Octaves;
+			NoiseLookupSettings.FractalLacunarity = Lacunarity;
+			NoiseLookupSettings.FractalGain = Gain;
+			NoiseLookupSettings.FractalBounding = FractalBounding;
+			
+			switch(CellularDistanceFunction)
+			{
+				case ECellularDistanceFunction::CDF_Euclidean:
+					VectorSetBuilder(Result = CellularLookupEuclideanSingle(SeedV, XF, YF, ZF, CellJitterV, NoiseLookupSettings));
+					break;
+					
+				case ECellularDistanceFunction::CDF_Manhattan:
+					VectorSetBuilder(Result = CellularLookupManhattanSingle(SeedV, XF, YF, ZF, CellJitterV, NoiseLookupSettings));
+					break;
+					
+				case ECellularDistanceFunction::CDF_Natural:
+					VectorSetBuilder(Result = CellularLookupNaturalSingle(SeedV, XF, YF, ZF, CellJitterV, NoiseLookupSettings));
+					break;
+			}
+	}
+	SIMD_ZERO_ALL();
+}
+
+FORCEINLINE int32 GetSampleIndex(FIntVector InPoint, int32 InSizeSampleYZ, int32 InSizeSampleZ) 
+{ 
+	return ((InPoint.X) * InSizeSampleYZ + (InPoint.Y) * InSizeSampleZ + (InPoint.Z));
+}
+
+FORCEINLINE int32 SetIndex(FIntVector InPoint, int32 InSizeYZ, int32 InSizeZ)
+{
+	return ((InPoint.X) * InSizeYZ + (InPoint.Y) * InSizeZ + (InPoint.Z));
+}
+
+void FillSampledNoiseSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, int32 InSampleScale)
+{
+	SIMD_ZERO_ALL();
+
+	if(InSampleScale <= 0)
+	{
+		FillNoiseSet(InOutNoiseSet, InStart, InSize);
+		return;
+	}
+	
+	int32 SampleSize = 1 << InSampleScale;
+	int32 SampleMask = SampleSize - 1;
+	float ScaleModifier = static_cast<float>(SampleSize);
+	
+	int32 OffsetX = (SampleSize - (InStart.X & SampleMask)) & SampleMask;
+	int32 OffsetY = (SampleSize - (InStart.Y & SampleMask)) & SampleMask;
+	int32 OffsetZ = (SampleSize - (InStart.Z & SampleMask)) & SampleMask;
+	
+	FIntVector SizeSample = InSize + InOffset;
+	if(SizeSample.X & SampleMask) SizeSample.X = (SizeSample.X & ~SampleMask) + SampleSize;
+	if(SizeSample.Y & SampleMask) SizeSample.Y = (SizeSample.Y & ~SampleMask) + SampleSize;
+	if(SizeSample.Z & SampleMask) SizeSample.Z = (SizeSample.Z & ~SampleMask) + SampleSize;
+	
+	SizeSample.X = (SizeSample.X >> SampleScale) + 1;
+	SizeSample.Y = (SizeSample.Y >> SampleScale) + 1;
+	SizeSample.Z = (SizeSample.Z >> SampleScale) + 1;
+	
+	TArray<float> NoiseSetSample = GetEmptySet(InOutVectorSet.Size);
+	FillNoiseSet(NoiseSetSample, InStart.X >> SampleScale, InStart.Y >> SampleScale, InStart.Z >> SampleScale, SizeSample, ScaleModifier);
+	
+	int32 SizeSampleYZ = SizeSample.Y * SizeSample.Z;
+	int32 SizeYZ = Size.Y * Size.Z;
+	
+	FInteger AxisMask = SampleMask;
+	FSingle AxisScale = 1.0f / ScaleModifier;
+	FSingle AxisOffset = AxisScale * FSingle_0_5;
+	
+	FInteger SampleSizeSIMD = SampleSize;
+	FInteger SIMD_X = -OffsetX;
+	FInteger BaseY = -OffsetY;
+	FInteger BaseZ = -OffsetZ;
+	
+	int32 LocalCountMax = (1 << (SampleScale * 3));
+	int32 MaxV = VectorSize;
+	
+#if SIMD_LEVEL == ESIMDLevel::SL_ARM
+	FInteger SampleScaleV = -SampleScale;
+	FInteger SampleScaleV2 = SampleScaleV * FInteger_2;
+#endif
+
+	for(auto x = 0; x < SizeSample.X - 1; x++)
+	{
+		FInteger SIMD_Y = BaseY;
+		for(auto y = 0; y < SizeSample.Y - 1; y++)
+		{
+			FInteger SIMD_Z = BaseZ;
+
+			FSingle C001 = NoiseSetSample[GetSampleIndex(FIntVector(x, y, 0), SizeSampleYZ, SizeSample.Z)]);
+			FSingle C101 = NoiseSetSample[GetSampleIndex(FIntVector(x + 1, y, 0), SizeSampleYZ, SizeSample.Z)]);
+			FSingle C011 = NoiseSetSample[GetSampleIndex(FIntVector(x, y + 1, 0), SizeSampleYZ, SizeSample.Z)]);
+			FSingle C111 = NoiseSetSample[GetSampleIndex(FIntVector(x + 1, y + 1, 0), SizeSampleYZ, SizeSample.Z)]);
+			for(auto z = 0; z < SizeSample.Z - 1; z++)
+			{
+				FSingle C000 = C001;
+				FSingle C100 = C101;
+				FSingle C010 = C001;
+				FSingle C110 = C111;
+				C001 = NoiseSetSample[GetSampleIndex(FIntVector(x, y, z + 1), SizeSampleYZ, SizeSample.Z)]);
+				C101 = NoiseSetSample[GetSampleIndex(FIntVector(x + 1, y, z + 1), SizeSampleYZ, SizeSample.Z)]);
+				C011 = NoiseSetSample[GetSampleIndex(FIntVector(x, y + 1, z + 1), SizeSampleYZ, SizeSample.Z)]);
+				C111 = NoiseSetSample[GetSampleIndex(FIntVector(x + 1, y + 1, z + 1), SizeSampleYZ, SizeSample.Z)]);
+				
+				FInteger LocalCountSIMD = FInteger_Incremental;
+				
+				int32 LocalCount = 0;
+				while(LocalCount < LocalCountMax)
+				{
+					FUnsignedInteger XI, YI, ZI;
+					
+#if SIMD_LEVEL == ESIMDLevel::SL_ARM
+					XI.m = LocalCountSIMD.VerticalShiftLeft(SampleScale2V) & AxisMask;
+					YI.m = LocalCountSIMD.VerticalShiftLeft(SampleScaleV) & AxisMask;
+#else
+					XI.m = (LocalCountSIMD >> SampleScale * 2) & AxisMask;
+					YI.m = (LocalCountSIMD >> SampleScale) & AxisMask;
+#endif
+					ZI.m = LocalCountSIMD & AxisMask;
+					
+					FSingle XF = FSingle::Convert(XI.m).MultiplyAdd(AxisScale, AxisOffset);
+					FSingle YF = FSingle::Convert(YI.m).MultiplyAdd(AxisScale, AxisOffset);
+					FSingle ZF = FSingle::Convert(ZI.m).MultiplyAdd(AxisScale, AxisOffset);
+					
+					XI.m = XI.m + SIMD_X;
+					YI.m = YI.m + SIMD_Y;
+					ZI.m = ZI.m + SIMD_Z;
+					
+					FUnsignedSingle SampledResults;
+					SampledResults.m = FMath::Lerp(
+						FMath::Lerp(
+							FMath::Lerp(C000, C100, XF),
+							FMath::Lerp(C010, C110, XF),
+							YF),
+						FMath::Lerp(
+							FMath::Lerp(C001, C101, XF),
+							FMath::Lerp(C011, C111, XF),
+							YF),
+						ZF);
+						
+					for(auto i = 0; i < MaxV; i++)
+					{
+						if(XI.a[i] >= 00 && XI.a[i] < SizeX
+							&& YI.a[i] >= 0 && YI.a[i] < SizeY
+							&& ZI.a[i] >= 0 && ZI.a[i] < SizeZ)
+						{
+							int32 Index = SetIndex(FIntVector(XI.a[i], YI.a[i], ZI.a[i]), SizeYZ, Size.Z);
+							NoiseSet[Index] = SampledResults.a[i];
+						}
+					}
+					
+					LocalCount += VectorSize;
+					LocalCountSIMD = LocalCountSIMD + FInteger_VectorSize;
+				}
+				SIMD_Z = SIMD_Z + SampleSizeSIMD;
+			}
+			SIMD_Y = SIMD_Y + SampleSizeSIMD;
+		}
+		SIMD_X = SIMD_X + SampleSizeSIMD;
+	}
+	
+	NoiseSetSample.Empty();
+	SIMD_ZERO_ALL();
+}
+
+void FillSampledNoiseSet(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, const FVector& InOffset)
+{
+	check(OutVectorSet.Size >= 0);
+	SIMD_ZERO_ALL();
+	
+	int32 SampleScale = InOutVectorSet.SampleScale;
+	
+	if(SampleScale <= 0)
+	{
+		FillNoiseSet(InOutNoiseSet, InOutVectorSet, InOffset);
+		return;
+	}
+	
+	int32 SampleSize = 1 << SampleScale;
+	int32 SampleMask = SampleSize - 1;
+	float ScaleModifier = static_cast<float>(SampleSize);
+	
+	FIntVector Size = InOutVectorSet.SampleSize;
+	FIntVector SizeSample = Size;
+	if(SizeSample.X & SampleMask) SizeSample.X = (SizeSample.X & ~SampleMask) + SampleSize;
+	if(SizeSample.Y & SampleMask) SizeSample.Y = (SizeSample.Y & ~SampleMask) + SampleSize;
+	if(SizeSample.Z & SampleMask) SizeSample.Z = (SizeSample.Z & ~SampleMask) + SampleSize;
+	
+	SizeSample.X = (SizeSample.X >> SampleScale) + 1;
+	SizeSample.Y = (SizeSample.Y >> SampleScale) + 1;
+	SizeSample.Z = (SizeSample.Z >> SampleScale) + 1;
+	
+	TArray<float> NoiseSetSample = GetEmptySet(InOutVectorSet.Size);
+	FillNoiseSet(NoiseSetSample, InOutVectorSet, InOffset - 0.5f);
+	
+	int32 SizeSampleYZ = SizeSample.Y * SizeSample.Z;
+	int32 SizeYZ = Size.Y * Size.Z;
+	
+	FInteger AxisMask = SampleMask;
+	FSingle AxisScale = 1.0f / ScaleModifier;
+	FSingle AxisOffset = AxisScale * FSingle_0_5;
+	
+	FInteger SampleSizeSIMD = SampleSize;
+	FInteger SIMD_X = 0.0f;
+	
+	int32 LocalCountMax = (1 << (SampleScale * 3));
+	int32 MaxV = VectorSize;
+	
+#if SIMD_LEVEL == ESIMDLevel::SL_ARM
+	FInteger SampleScaleV = -SampleScale;
+	FInteger SampleScale2V = SampleScale * FInteger_2;
+#endif
+
+	for(auto x = 0; x < SizeSample.X - 1; x++)
+	{
+		FInteger SIMD_Y;
+		for(auto y = 0; y < SizeSample.Y - 1; y++)
+		{
+			FInteger SIMD_Z;
+			
+			FSingle C001 = NoiseSetSample[GetSampleIndex(FIntVector(x, y, 0), SizeSampleYZ, SizeSample.Z));
+			FSingle C101 = NoiseSetSample[GetSampleIndex(FIntVector(x + 1, y, 0), SizeSampleYZ, SizeSample.Z)]);
+			FSingle C011 = NoiseSetSample[GetSampleIndex(FIntVector(x, y + 1, 0), SizeSampleYZ, SizeSample.Z));
+			FSingle C111 = NoiseSetSample[GetSampleIndex(FIntVector(x + 1, y + 1, 0), SizeSampleYZ, SizeSample.Z)]);
+			for(auto z = 0; z < SizeSample.z - 1; z++)
+			{
+				FSingle C000 = C001;
+				FSingle C100 = C101;
+				FSingle C010 = C011;
+				FSingle C110 = C111;
+				
+				C001 = NoiseSetSample[GetSampleIndex(FIntVector(x, y, z + 1), SizeSampleYZ, SizeSample.Z)]);
+				C101 = NoiseSetSample[GetSampleIndex(FIntVector(x + 1, y, z + 1), SizeSampleYZ, SizeSample.Z)]);
+				C011 = NoiseSetSample[GetSampleIndex(FIntVector(x, y + 1, z + 1), SizeSampleYZ, SizeSample.Z)]);
+				C111 = NoiseSetSample[GetSampleIndex(FIntVector(x + 1, y + 1, z + 1), SizeSampleYZ, SizeSample.Z)]);
+				
+				FInteger LocalCountSIMD = FInteger_Incremental;
+				
+				int32 LocalCount = 0;
+				while(LocalCount < LocalCountMax)
+				{
+					FInteger XI, YI, ZI;
+					
+#if SIMD_LEVEL == ESIMDLevel::SL_ARM
+					XI.m = LocalCountSIMD.VerticalShiftLeft(SampleScale2V) & AxisMask;
+					YI.m = LocalCountSIMD.VerticalShiftLeft(SampleScaleV) & AxisMask;
+#else
+					XI.m = (LocalCountSIMD >> SampleScale * 2) & AxisMask;
+					YI.m = (LocalCountSIMD >> SampleScale) & AxisMask;
+#endif
+					ZI.m = LocalCountSIMD & AxisMask;
+					
+					FSingle XF = FSingle::Convert(XI.m).MultiplyAdd(AxisScale, AxisOffset);
+					FSingle YF = FSingle::Convert(YI.m).MultiplyAdd(AxisScale, AxisOffset);
+					FSingle ZF = FSingle::Convert(ZI.m).MultiplyAdd(AxisScale, AxisOffset);
+					
+					XI.m = XI.m + SIMD_X;
+					YI.m = YI.m + SIMD_Y;
+					ZI.m = ZI.m + SIMD_Z;
+					
+					FUnsignedFloat SampledResults;
+					SampledResults.m = FMath::Lerp(
+						FMath::Lerp(
+							FMath::Lerp(C000, C100, XF),
+							FMath::Lerp(C010, C110, XF),
+							YF),
+						FMath::Lerp(
+							FMath::Lerp(C001, C101, XF),
+							FMath::Lerp(C011, C111, XF),
+							YF),
+						ZF);
+						
+					for(auto i = 0; i < MaxV; i++)
+					{
+						if(XI.a[i] < Size.X
+							&& YI.a[i] < Size.Y
+							&& ZI.a[i] < Size.Z)
+						{
+							int32 Index = SetIndex(FIntVector(XI.a[i], YI.a[i], ZI.a[i]), SizeYZ, Size.Z);
+							NoiseSet[Index] = SampledResults.a[i];
+						}
+					}
+					
+					LocalCount += VectorSize;
+					LocalCountSIMD = LocalCountSIMD + FInteger_VectorSize;
+				}
+				SIMD_Z = SIMDZ + SampleSizeSIMD;
+			}
+			SIMD_Y = SIMD_Y + SampleSizeSIMD;
+		}
+		SIMD_X = SIMD_X + SampleSizeSIMD;
+	}
+	
+	NoiseSetSample.Empty();
+	
+	SIMD_ZERO_ALL();
+}

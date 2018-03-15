@@ -24,6 +24,499 @@
 
 namespace FastNoise
 {
+	void FSingle VECTORCALL FFastNoiseSIMD::Lerp(FSingle InA, FSingle InB, FSingle InT)
+	{
+		return (InB - InA).MultiplyAdd(InT, InA);
+	}
+
+	void FSingle VECTORCALL FFastNoiseSIMD::InterpQuintic(FSingle InT)
+	{
+		FSingle Result = InT.MultiplySubtract(FSingle_6, FSingle_15).MultiplyAdd(InT, FSingle_10);
+		Result = Result * InT;
+		Result = Result * InT;
+		Result = Result * InT;
+		return Result;
+	}
+
+	void FSingle VECTORCALL FFastNoiseSIMD::CubicLerp(FSingle InA, FSingle InB, FSingle InC, FSingle InD, FSingle InT)
+	{
+		FSingle P = (InD - InC) - (InA - InB);
+		return InT.MultiplyAdd((InT * (InT * P), InT.MultiplyAdd((InT * ((InA - InB) - P)), InT.MultiplyAdd((InC - InA), InB))));
+	}
+
+	void FInteger VECTORCALL Hash(FInteger InSeed, FIntegerVector InPoint)
+	{
+		FInteger Hash = Value_Coordinate(InSeed, InPoint);
+
+		Hash = (Hash >> 13) ^ Hash;
+
+		return Hash;
+	}
+
+	void FInteger VECTORCALL FFastNoiseSIMD::HashHB(FInteger InSeed, FIntegerVector InPoint)
+	{
+		FInteger Hash = Value_Coordinate(InSeed, InPoint);
+
+		return FSingle_HashToFloat * FSingle::Convert(Hash);
+	}
+
+	void FSingle VECTORCALL FFastNoiseSIMD::Value_Coordinate(FInteger InSeed, FIntegerVector InPoint)
+	{
+		FInteger Hash = InSeed;
+
+		Hash = InPoint.X ^ Hash;
+		Hash = InPoint.Y ^ Hash;
+		Hash = InPoint.Z ^ Hash;
+
+		Hash = ((Hash * Hash) * FInteger_60493) * Hash;
+
+		return Hash;
+	}
+
+#if defined(__AVX512f__)
+	void FSingle VECTORCALL FFastNoiseSIMD::Gradient_Coordinate(FInteger InSeed, FIntegerVector InPointI, FSingleVector InPoint)
+	{
+		FInteger Hash = Hash(InSeed, InPointI);
+
+		FSingle GradientX = FSingle_GradientX.Permute(Hash);
+		FSingle GradientY = FSingle_GradientY.Permute(Hash);
+		FSingle GradientZ = FSingle_GradientZ.Permute(Hash);
+
+		return InPoint.X.MultiplyAdd(GradientX, InPoint.Y.MultiplyAdd(GradientY, (InPoint.Z * GradientZ));
+	}
+#else
+	void FSingle VECTORCALL FFastNoiseSIMD::Gradient_Coordinate(FInteger InSeed, FIntegerVector InPointI, FSingleVector InPoint)
+	{
+		FInteger Hash = Hash(InSeed, InPointI);
+		FInteger HashAnd13 = Hash & FInteger_13;
+
+		FMask LessThan8 = HashAnd13 < FInteger_8;
+		FSingle U = FSingle::Blend(InPoint.Y, InPoint.X, LessThan8);
+
+		FMask LessThan2 = HashAnd13 < FInteger_2;
+		FMask H12Or14 = FInteger_12 == HashAnd13;
+		FSingle V = FSingle::Blend(FSingle::Blend(InPoint.Z, IntPoint.X, H12Or14), InPoint.Y, LessThan2);
+
+		FSingle H1 = FSingle::Cast(Hash << 31);
+		FSingle H2 = FSingle::Cast((Hash & FInteger_2) << 30);
+
+		return (U ^ H1) + (V ^ H2);
+	}
+#endif
+
+	void FSingle VECTORCALL FFastNoiseSIMD::WhiteNoise_Single(FInteger InSeed, FSingleVector InPoint)
+	{
+		return Value_Coordinate(InSeed,
+			(FInteger::Cast(InPoint.X) ^ (FInteger::Cast(InPoint.X) >> 16)) * FInteger_PrimeX,
+			(FInteger::Cast(InPoint.X) ^ (FInteger::Cast(InPoint.X) >> 16)) * FInteger_PrimeX,
+			(FInteger::Cast(InPoint.X) ^ (FInteger::Cast(InPoint.X) >> 16)) * FInteger_PrimeX);
+	}
+
+	void FSingle VECTORCALL FFastNoiseSIMD::Value_Single(FInteger InSeed, FSingleVector InPoint)
+	{
+		FSingleVector PS = InPoint.Floor();
+
+		FIntegerVector P0 = FIntegerVector::Convert(PS) * FIntegerVector_Prime;
+		FIntegerVector P1 = P0 + FIntegerVector_Prime;
+
+		PS = InterpQuintic(InPoint - PS);
+
+		return Lerp(
+			Lerp(
+				Lerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P0.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P0.Y, P0.Z)), PS.X),
+				Lerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P1.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P1.Y, P0.Z)), PS.X), PS.Y),
+			Lerp(
+				Lerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P0.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P0.Y, P1.Z)), PS.X),
+				Lerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P1.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P1.Y, P1.Z)), PS.X), PS.Y), PS.Z);
+	}
+
+	void FSingle VECTORCALL FFastNoiseSIMD::Perlin_Single(FInteger InSeed, FSingleVector InPoint)
+	{
+		FSingleVector PS = InPoint.Floor();
+
+		FIntegerVector P0 = FIntegerVector::Convert(PS) * FIntegerVector_Prime;
+		FIntegerVector P1 = P0 + FIntegerVector_Prime;
+
+		FSingleVector PF0 = PS = InPoint - PS;
+		FSingleVector PF1 = PF0 - FSingleVector_1;
+
+		PS = InterpQuintic(PS);
+
+		return Lerp(
+			Lerp(
+				Lerp(Gradient_Coordinate(InSeed, FIntegerVector(P0.X, P0.Y, P0.Z), FSingleVector(PF0.X, PF0.Y, PF0.Z)), Gradient_Coordinate(InSeed, FIntegerVector(P1.X, P0.Y, P0.Z), FSingleVector(PF1.X, PF0.Y, PF0.Z)), PS.X),
+				Lerp(Gradient_Coordinate(InSeed, FIntegerVector(P0.X, P1.Y, P0.Z), FSingleVector(PF0.X, PF1.Y, PF0.Z)), Gradient_Coordinate(InSeed, FIntegerVector(P1.X, P1.Y, P0.Z), FSingleVector(PF1.X, PF1.Y, PF0.Z)), PS.X), PS.Y),
+			Lerp(
+				Lerp(Gradient_Coordinate(InSeed, FIntegerVector(P0.X, P0.Y, P1.Z), FSingleVector(PF0.X, PF0.Y, PF1.Z)), Gradient_Coordinate(InSeed, FIntegerVector(P1.X, P0.Y, P1.Z), FSingleVector(PF1.X, PF0.Y, PF1.Z)), PS.X),
+				Lerp(Gradient_Coordinate(InSeed, FIntegerVector(P0.X, P1.Y, P1.Z), FSingleVector(PF0.X, PF1.Y, PF1.Z)), Gradient_Coordinate(InSeed, FIntegerVector(P1.X, P1.Y, P1.Z), FSingleVector(PF1.X, PF1.Y, PF1.Z)), PS.X), PS.Y), PS.Z);
+	}
+
+	void FSingle VECTORCALL FFastNoiseSIMD::Simplex_Single(FInteger InSeed, FSingleVector InPoint)
+	{
+		FSingle F = FSingle_F3 * ((InPoint.X + InPoint.Y) + InPoint.Z);
+		FSingleVector P0 = (InPoint + F).Floor();
+
+		FIntegerVector IJK = FIntegerVector::Convert(P0) * FIntegerVector_Prime;
+
+		FSingle G = FSingle_G3 * ((P0.X + P0.Y) + P0.Z);
+
+		P0 = InPoint - (P0 - G);
+
+		FMask X0_GE_Y0 = P0.X >= P0.Y;
+		FMask Y0_GE_Z0 = P0.Y >= P0.Z;
+		FMask X0_GE_Z0 = P0.X >= P0.Z;
+
+		FMaskVector IJK((X0_GE_Y0 & X0_GE_Z0), (X0_GE_Y0 & !(Y0_GE_Z0)), (!(X0_GE_Z0 & !(Y0_GE_Z0))));
+		FMaskVector IJK2((X0_GE_Y0 | X0_GE_Z0), (!(X0_GE_Y0) | Y0_GE_Z0), (!(!(X0_GE_Z0) | Y0_GE_Z0)));
+		FSingleVector P1(IJK2.MaskSubtract(P0, FSingle_1) + FSingle_G3);
+		FSingleVector P2(IJK2.MaskSubtract(P0, FSingle_1) + FSingle_F3);
+		FSingleVector P3 = P0 + FSingle_G33;
+
+		FSingle T0 = P0.Z.MultiplyAddNegated(P0.Z, P0.Y.MultiplyAddNegated(P0.Y, P0.X.MultiplyAddNegated(P0.X, FSingle_0_6)));
+		FSingle T1 = P0.Z.MultiplyAddNegated(P1.Z, P1.Y.MultiplyAddNegated(P1.Y, P1.X.MultiplyAddNegated(P1.X, FSingle_0_6)));
+		FSingle T2 = P0.Z.MultiplyAddNegated(P2.Z, P2.Y.MultiplyAddNegated(P2.Y, P2.X.MultiplyAddNegated(P2.X, FSingle_0_6)));
+		FSingle T3 = P0.Z.MultiplyAddNegated(P3.Z, P3.Y.MultiplyAddNegated(P3.Y, P3.X.MultiplyAddNegated(P3.X, FSingle_0_6)));
+
+		FMask N0 = T0 >= FSingle_0;
+		FMask N1 = T1 >= FSingle_0;
+		FMask N2 = T2 >= FSingle_0;
+		FMask N3 = T3 >= FSingle_0;
+
+		T0 = T0 * T0;
+		T1 = T1 * T1;
+		T2 = T2 * T2;
+		T3 = T3 * T3;
+
+		FSingle V0 = (T0 * T0) * Gradient_Coordinate(InSeed, IJK, P0);
+		FSingle V1 = (T1 * T1) * Gradient_Coordinate(InSeed, IJK1.X.MaskAdd(IJK.X, FInteger_PrimeX), IJK1.Y.MaskAdd(IJK.Y, FInteger_PrimeY), IJK1.Z.MaskAdd(IJK.Z, FInteger_PrimeZ)), P1);
+		FSingle V2 = (T2 * T2) * Gradient_Coordinate(InSeed, IJK2.X.MaskAdd(IJK.X, FInteger_PrimeX), IJK2.Y.MaskAdd(IJK.Y, FInteger_PrimeY), IJK2.Z.MaskAdd(IJK.Z, FInteger_PrimeZ)), P2);
+		FSingle V3 = FMask::Mask((T3 * T3) * Gradient_Coordinate(InSeed, (IJK.X + FInteger_PrimeX), (IJK.Y + FInteger_PrimeY), (IJK.Z, FInteger_PrimeZ), P3), N3);
+
+		return FSingle_32 * N0.MaskAdd(N1.MaskAdd(N2.MaskAdd(V3, V2), V1), V0);
+	}
+
+	void FSingle VECTORCALL FFastNoiseSIMD::Cubic_Single(FInteger InSeed, FSingleVector InPoint)
+	{
+		FSingleVector PF1 = InPoint.Floor();
+
+		FIntegerVector P1 = FIntegerVector::Convert(PF1) * FIntegerVector_Prime;
+
+		FIntegerVector P0 = P1 - FIntegerVector_Prime;
+		FIntegerVector P2 = P1 + FIntegerVector_Prime;
+		FIntegerVector P3 = P2 + FIntegerVector_Prime;
+
+		FSingleVector PS = InPoint - PF1;
+
+		return CubicLerp(
+			CubicLerp(
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P0.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P0.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P0.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P0.Y, P0.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P1.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P1.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P1.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P1.Y, P0.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P2.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P2.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P2.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P2.Y, P0.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P3.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P3.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P3.Y, P0.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P3.Y, P0.Z)), PS.X), PS.Y),
+			CubicLerp(
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P0.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P0.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P0.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P0.Y, P1.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P1.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P1.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P1.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P1.Y, P1.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P2.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P2.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P2.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P2.Y, P1.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P3.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P3.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P3.Y, P1.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P3.Y, P1.Z)), PS.X), PS.Y),
+			CubicLerp(
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P0.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P0.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P0.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P0.Y, P2.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P1.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P1.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P1.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P1.Y, P2.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P2.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P2.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P2.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P2.Y, P2.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P3.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P3.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P3.Y, P2.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P3.Y, P2.Z)), PS.X), PS.Y),
+			CubicLerp(
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P0.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P0.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P0.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P0.Y, P3.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P1.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P1.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P1.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P1.Y, P3.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P2.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P2.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P2.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P2.Y, P3.Z)), PS.X),
+				CubicLerp(Value_Coordinate(InSeed, FSingleVector(P0.X, P3.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P1.X, P3.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P2.X, P3.Y, P3.Z)), Value_Coordinate(InSeed, FSingleVector(P3.X, P3.Y, P3.Z)), PS.X), PS.Y), PS.Z) * FSingle_CubicBounding;
+	}
+
+	void VECTORCALL FFastNoiseSIMD::GradientPerturb_Single(FInteger InSeed, FSingle InPerturbAmplitude, FSingle InPerturbFrequency, FSingleVector& InOutPoint)
+	{
+		FSingleVector PF = InOutPoint * InPerturbFrequency;
+
+		FSingleVector PS = PF.Floor();
+
+		FIntegerVector P0 = FIntegerVector::Convert(PS) * FIntegerVector_Prime;
+		FIntegerVector P1 = P0 + FIntegerVector_Prime;
+
+		PS = InterpQuintic(PF - PS);
+
+		FGradientCoordinate Coordinate000(0, 0, 0);
+		FGradientCoordinate Coordinate001(0, 0, 1);
+		FGradientCoordinate Coordinate010(0, 1, 0);
+		FGradientCoordinate Coordinate011(0, 1, 1);
+		FGradientCoordinate Coordinate100(1, 0, 0);
+		FGradientCoordinate Coordinate101(1, 0, 1);
+		FGradientCoordinate Coordinate110(1, 1, 0);
+		FGradientCoordinate Coordinate111(1, 1, 1);
+
+		FSingleVector P0Y = Lerp(Lerp(Coordinate000, Coordinate100, PS.X), Lerp(Coordinate010, Coordinate110, PS.X), PS.Y);
+		FSingleVector P1Y = Lerp(Lerp(Coordinate001, Coordinate101, PS.X), Lerp(Coordinate011, Coordinate111, PS.X), PS.Y);
+
+		InOutPoint = (Lerp(P0Y, P1Y, PS.Z), InPerturbAmplitude, InOutPoint);
+	}
+
+	void FFastNoiseSIMD::InitializePerturbValues(EPerturbType InPerturbType, FSingle& OutPerturbNormalizeLength, FSingle& OutPerturbFrequency, FSingle& OutPerturbAmplitude, FSingle& OutPerturbAmplitude, FSingle& OutPerturbLacunarity, FSingle& OutPerturbGain)
+	{
+		switch (InPerturbType)
+		{
+		case EPerturbType::PT_None:
+			break;
+
+		case EPerturbType::PT_Normalize:
+			OutPerturbNormalizeLength = PerturbAmplitude;
+			OutPerturbFrequency = PerturbFrequency;
+			break;
+
+		case EPerturbType::PT_Normalize:
+		case EPerturbType::PT_GradientFractalNormalize:
+			OutPerturbNormalizeLength = PerturbNormalizeLength * Frequency;
+			break;
+
+		case EPerturbType::PT_GradientFractal:
+			OutPerturbAmplitude = PerturbAmplitude * FractalBounding;
+			OutPerturbFrequency = PertubFrequency;
+			OutPerturbLacunarity = PerturbLacunarity;
+			OutPerturbGain = PerturbGain;
+			break;
+		}
+	}
+
+	void FFastNoiseSIMD::PerturbSwitch(EPerturbType InPerturbType, FSingle InSeed, FSingle InPerturbAmplitude, FSingle InPerturbFrequency, FSingle InPerturbGain, FSingle InPerturbLacunarity, FSingle InPerturbNormalizeLength, FSingleVector& InOutPoint)
+	{
+		switch (InPerturbType)
+		{
+			case EPerturbType::PT_None;
+				break;
+
+			case EPerturbType::PT_GradientNormalize:
+			case EPerturbType::PT_Gradient:
+				GradientPerturb_Single((InSeed - FInteger_1), InPerturbAmplitude, InPerturbFrequency, InPoint);
+				break;
+
+			case EPerturbType::PT_GradientFractal:
+			{
+				FInteger Seed = InSeed - FInteger_1;
+				FSingle Frequency = InPerturbFrequency;
+				FSingle Amplitude = InPerturbAmplitude;
+				GradientPerturb_Single(Seed, Amplitude, Frequency, InPoint);
+				int32 OctaveIndex = 0;
+				while (++OctaveIndex < PerturbOctaves)
+				{
+					Frequency = Frequency * InPerturbLacunarity;
+					Seed = Seed - FInteger_1;
+					Amplitude = Amplitude * InPerturbGain;
+					GradientPerturb_Single(Seed, Amplitude, Frequency, InPoint);
+				}
+			}
+
+			case EPerturbType::PT_GradientFractal:
+			case EPerturbType::PT_Normalize:
+			case EPerturbType::PT_GradientFractalNormalize:
+			{
+				FSingle InverseMagnitude = InPerturbNormalizeLength * (InPoint.X.MultiplyAdd(InPoint.X, InPoint.Y.MultiplyAdd(InPoint.Y, (InPoint.Z * InPoint.Z))).InverseSqrt();
+				InPoint = InPoint * InverseMagnitude;
+			}
+		}
+	}
+
+	// Result = func_single(seed, point)
+	void FFastNoiseSIMD::SetBuilder()
+	{
+		if ((InSizeZ & (VectorSize - 1)) == )
+		{
+			FInteger BaseY = InStart.Y;
+			FInteger BaseZ = FInteger_Incremental + InStart.Z;
+			FInteger X = InStart.X;
+			int32 Index = 0;
+			FSingleVector PF;
+			for (int32 IX = 0; IX < InSize.X; IX++)
+			{
+				PF.X = FSingle::Convert(X) * InFrequency.X;
+				FInteger Y = BaseY;
+				for (auto IY = 0; IY < InSize.Y; IY++)
+				{
+					PF.Y = FSingle::Convert(Y) * InFrequency.Y;
+					FInteger Z = BaseZ;
+					PF.Z = FSingle::Convert(Z) * InFrequency.Z;
+
+					PerturbSwitch(InPerturbType, InSeed, InPerturbAmplitude, InPerturbFrequency, InPerturbGain, InPerturbLacunarity, InPerturbNormalizeLength, PF);
+
+					FSingle Result;
+					Result.Store(InOutNoiseSet[Index]);
+
+					int32 IZ = VectorSize;
+					while (IZ < SizeZ)
+					{
+						Z = Z + FInteger_VectorSize;
+						Index += VectorSize;
+						IZ += VectorSize;
+						PF.Z = FSingle::Convert(Z) * InFrequency.Z;
+						PerturbSwitch(InPerturbType, InSeed, InPerturbAmplitude, InPerturbFrequency, InPerturbGain, InPerturbLacunarity, InPerturbNormalizeLength, PF);
+						Result.Store(InOutNoiseSet[Index]);
+					}
+
+					Index += VectorSize;
+					Y = Y + FInteger_1;
+				}
+				X = X + FInteger_1;
+			}
+		}
+		else
+		{
+			FInteger SizeY = InSize.Y;
+			FInteger SizeZ = InSize.Z;
+
+			FInteger EndY = InStart.Y + InSize.Y - 1;
+			FInteger EndZ = InStart.Z + InSize.Z - 1;
+
+			FIntegerVector P(InStart.X, InStart.Y, InStart.Z + FInteger_Incremental);
+
+			AxisReset(SizeZ, 1);
+
+			int32 Index = 0;
+			int32 MaxIndex = InSize.X * InSize.Y * InSize.Z;
+
+			for (; Index < MaxIndex - VectorSize; Index += VectorSize)
+			{
+				FSingleVector PF = FSingleVector::Convert(P) * InFrequency;
+
+				PerturbSwitch(InPerturbType, InSeed, InPerturbAmplitude, InPerturbFrequency, InPerturbGain, InPerturbLacunarity, InPerturbNormalizeLength, PF);
+
+				FSingle Result;
+				Result.Store(InOutNoiseSet[Index]);
+
+				P.Z = Z + FInteger_VectorSize;
+
+				AxisReset(SizeZ, 0);
+			}
+
+			FSingleVector PF = FSingleVector::Convert(P) * InFrequency;
+			PerturbSwitch(InPerturbType, InSeed, InPerturbAmplitude, InPerturbFrequency, InPerturbGain, InPerturbLacunarity, InPerturbNormalizeLength, PF);
+			FSingle Result;
+			StoreLastResult(InOutNoiseSet[Index], Result);
+		}
+	}
+
+	void FFastNoiseSIMD::Fbm_Single(TFunction<FSingle(FInteger, FSingleVector&)> InFunc)
+	{
+		FInteger Seed = InSeed;
+		FSingle Result = InFunc(Seed, InOutPoint);
+		FSingle Amplitude = FSingle_1;
+		int32 OctaveIndex = 0;
+		while (++OctaveIndex < Octaves)
+		{
+			InOutPoint = InOutPoint * InLacunarity;
+			Seed = Seed + FInteger_1;
+			Amplitude = Amplitude * InGain;
+			Result = (f_Single(Seed, PF)).MultiplyAdd(Amplitude, Result);
+		}
+		Result = Result * InFractalBounding;
+	}
+
+	void FFastNoiseSIMD::Billow_Single(TFunction<FSingle(FInteger, FSingleVector&)> InFunc)
+	{
+		FInteger Seed = InSeed;
+		FSingle Result = (InFunc(Seed, InOutPoint)).Abs().MultiplySubtract(FSingle_2, FSingle_1);
+		FSingle Amplitude = FSingle_1;
+		int32 OctaveIndex = 0;
+		while (++OctaveIndex < Octaves)
+		{
+			PF = PF * InLacunarity;
+			Seed = Seed + FInteger_1;
+			Amplitude = Amplitude * InGain;
+			Result = (f_Single(Seed, InOutPoint)).Abs().MultiplySubtract(FSingle_2, FSingle_1).MultiplyAdd(Amplitude, Result);
+		}
+		Result = Result * InFractalBounding;
+	}
+
+	void FFastNoiseSIMD::RigidMulti_Single(TFunction<FSingle(FInteger, FSingleVector&)> InFunc)
+	{
+		FInteger Seed = InSeed;
+		FSingle Result = FSingle_1 - (InFunc(Seed, InOutPoint)).Abs();
+		FSingle Amplitude = FSingle_1;
+		int32 OctaveIndex = 0;
+		while (++OctaveIndex < Octaves)
+		{
+			PF = PF * InLacunarity;
+			Seed = Seed + FInteger_1;
+			Amplitude = Amplitude * InGain;
+			Result = (FSingle_1 - (f_Single(Seed, InOutPoint)).Abs()).MultiplyAddNegate(Amplitude, Result);
+		}
+	}
+
+	void FFastNoiseSIMD::FillSet()
+	{
+		FInteger Seed = this->Seed;
+		InitializePerturbValues();
+		InScaleModifier *= this->Frequency;
+		FSingleVector Frequency = InScaleModifier * this->Scale;
+		SetBuilder(func_Single(Seed, InPoint));
+	}
+
+	void FFastNoiseSIMD::FillFractalSet(TFunction<void()> InFunc)
+	{
+		FInteger Seed = this->Seed;
+		FSingle Lacunarity = this->Lacunarity;
+		FSingle Gain = this->Gain;
+		FSingle FractalBounding = this->FractalBounding;
+		InitializePerturbValues();
+		InScaleModifier *= this->Frequency;
+		FSingleVector Frequency = InScaleModifier * this->Scale;
+		switch (FractalType)
+		{
+		case EFractalType::FT_FBM:
+			SetBuilder(Fbm_Single(func));
+			break;
+
+		case EFractalType::FT_Billow:
+			SetBuilder(Billow_Single(func));
+			break;
+
+		case EFractalType::FT_RigidMulti:
+			SetBuilder(RigidMulti_Single(func));
+			break;
+		}
+	}
+
+	void FFastNoiseSIMD::VectorSetBuilder(TFunction<void()> InFunc)
+	{
+		while (InOutIndex < InLoopMax)
+		{
+			//FSingleVector PF = 
+		}
+	}
+
+	// Calls to ValueSingle, PerlinSingle, SimplexSingle, WhiteNoiseSingle, CubicSingle
+	// Fill_Value_Set, Fill_Perlin_Set, Fill_Simplex_Set, Fill_WhiteNoise_Set, Fill_Cubic_Set
+	void FFastNoiseSIMD::FillVectorSet(TFunction<void()> InFunc)
+	{
+
+	}
+
+	// Fill_Value_FractalSet, Fill_Perlin_FractalSet, Fill_Simplex_FractalSet, Fill_WhiteNoise_FractalSet, Fill_Cubic_FractalSet
+	void FillFractalVectorSet(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, FVector InOffset);
+	void FillWhiteNoiseSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, float InScaleModifier);
+	void CellularValue_Single(EDistanceType InDistanceType, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter);
+	void CellularLookupFractalValue(ENoiseType InNoiseType);
+	FSingle VECTORCALL CellularLookup_Single(::EDistanceType InDistanceType, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter, const FNoiseLookupSettings& InNoiseLookupSettings);
+	FSingle VECTORCALL CellularDistance_Single(::EDistanceType InDistanceType, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter);
+	FSingle VECTORCALL CellularDistance2_Single(::EDistanceType InDistanceType, int32 InReturnFunction, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter, int32 InIndex0, int32 InIndex1);
+	FSingle VECTORCALL CellularDistance2Cave_Single(::EDistanceType InDistanceType, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter, int32 InIndex0, int32 InIndex1);
+	void CellularMulti();
+	void CellularIndexMulti();
+	void FillCellularSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, float InScaleModifier);
+	void CellularMultiVector();
+	void CellularIndexMultiVector();
+	void FillCellularSet(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, FVector InOffset);
+	FORCEINLINE int32 GetSampleIndex(FIntVector InPoint);
+	FORCEINLINE int32 GetSetIndex(FIntVector InPoint);
+	void FillSampledNoiseSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, int32 InSampleScale);
+	void FillSampledNoiseSet(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, FVector InOffset);
+
+
+	/* OLD OR SUMPTHIN */
+
 	FSingle VECTORCALL FFastNoiseSIMD::Lerp(FSingle InLeft, FSingle InRight, FSingle InAlpha)
 	{
 		FSingle Result;

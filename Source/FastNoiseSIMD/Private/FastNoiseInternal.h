@@ -24,7 +24,8 @@
 #include "ThreadSafeBool.h"
 
 // TODO: includes depending on defines
-#include "FastNoise_Fallback.h"
+#include "Implementations/FastNoise_Fallback.h"
+#include "FastNoiseTypes.h"
 
 namespace FastNoise
 {
@@ -136,21 +137,50 @@ namespace FastNoise
 	class FFastNoiseSIMD
 	{
 	public:
-		FFastNoiseSIMD(ESIMDLevel InSIMDLevel, int32 InSeed);
+		FFastNoiseSIMD(::ESIMDLevel InSIMDLevel, int32 InSeed);
 
 	private:
-		ESIMDLevel Level;
+		::ESIMDLevel Level;
 		int32 Seed;
 
-		FSingle VECTORCALL Lerp(FSingle InLeft, FSingle InRight, FSingle InAlpha);
-		FSingle VECTORCALL InterpolateQuintic(FSingle InValue);
-		FSingle VECTORCALL CubicLerp(FSingle InA, FSingle InB, FSingle InC, FSingle InD, FSingle InAlpha);
-		FInteger VECTORCALL Hash(FInteger InSeed, FIntegerVector InPoint);
-		FInteger VECTORCALL HashHB(FInteger InSeed, FIntegerVector InPoint);
-		FSingle VECTORCALL ValueCoordinate(FInteger InSeed, FIntegerVector InPoint);
-		FSingle VECTORCALL GradientCoordinate(FInteger InSeed, FIntegerVector InPointI, FSingleVector InPoint);
-		FSingle VECTORCALL ValueSingle(FInteger InSeed, FSingleVector InPoint);
-		FSingle VECTORCALL CubicSingle(FInteger InSeed, FSingleVector InPoint);
-		void VECTORCALL GradientPerturbSingle(FInteger InSeed, FSingle InPerturbAmplitude, FSingle InPerturbFrequency, FSingleVector& InOutPoint);
+		void FSingle VECTORCALL Lerp(FSingle InA, FSingle InB, FSingle InT);
+		void FSingle VECTORCALL InterpQuintic(FSingle InT);
+		void FSingle VECTORCALL CubicLerp(FSingle InA, FSingle InB, FSingle InC, FSingle InT);
+		void FInteger VECTORCALL Hash(FInteger InSeed, FIntegerVector InPoint);
+		void FInteger VECTORCALL HashHB(FInteger InSeed, FIntegerVector InPoint);
+		void FSingle VECTORCALL Value_Coordinate(FInteger InSeed, FIntegerVector InPoint);
+		void FSingle VECTORCALL Gradient_Coordinate(FInteger InSeed, FIntegerVector InPointI, FSingleVector InPoint);
+		void FSingle VECTORCALL WhiteNoise_Single(FInteger InSeed, FSingleVector InPoint);
+		void FSingle VECTORCALL Value_Single(FInteger InSeed, FSingleVector InPoint);
+		void FSingle VECTORCALL Perlin_Single(FInteger InSeed, FSingleVector InPoint);
+		void FSingle VECTORCALL Simplex_Single(FInteger InSeed, FSingleVector InPoint);
+		void FSingle VECTORCALL Cubic_Single(FInteger InSeed, FSingleVector InPoint);
+		void VECTORCALL GradientPerturb_Single(FInteger InSeed, FSingle InPerturbAmplitude, FSingle InPerturbFrequency, FSingleVector& InOutPoint);
+		void InitializePerturbValues();
+		void PerturbSwitch();
+		void SetBuilder(TFunction<void()> InFunc);
+		void Fbm_Single(TFunction<void()> InFunc);
+		void Billow_Single(TFunction<void()> InFunc);
+		void RigidMulti_Single(TFunction<void()> InFunc);
+		void FillFractalSet(TFunction<void()> InFunc);
+		void VectorSetBuilder(TFunction<void()> InFunc);
+		void FillFractalVectorSet(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, FVector InOffset);
+		void FillWhiteNoiseSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, float InScaleModifier);
+		void CellularValue_Single(EDistanceType InDistanceType, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter);
+		void CellularLookupFractalValue(ENoiseType InNoiseType);
+		FSingle VECTORCALL CellularLookup_Single(::EDistanceType InDistanceType, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter, const FNoiseLookupSettings& InNoiseLookupSettings);
+		FSingle VECTORCALL CellularDistance_Single(::EDistanceType InDistanceType, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter);
+		FSingle VECTORCALL CellularDistance2_Single(::EDistanceType InDistanceType, int32 InReturnFunction, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter, int32 InIndex0, int32 InIndex1);
+		FSingle VECTORCALL CellularDistance2Cave_Single(::EDistanceType InDistanceType, FInteger InSeed, FSingleVector InPoint, FSingle InCellJitter, int32 InIndex0, int32 InIndex1);
+		void CellularMulti();
+		void CellularIndexMulti();
+		void FillCellularSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, float InScaleModifier);
+		void CellularMultiVector();
+		void CellularIndexMultiVector();
+		void FillCellularSet(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, FVector InOffset);
+		FORCEINLINE int32 GetSampleIndex(FIntVector InPoint);
+		FORCEINLINE int32 GetSetIndex(FIntVector InPoint);
+		void FillSampledNoiseSet(TArray<float>& InOutNoiseSet, FIntVector InStart, FIntVector InSize, int32 InSampleScale);
+		void FillSampledNoiseSet(TArray<float>& InOutNoiseSet, FFastNoiseVectorSet& InOutVectorSet, FVector InOffset);
 	};
 }

@@ -25,6 +25,15 @@
 #include "CoreMinimal.h"
 #include "ModuleManager.h"
 
+/*
+__SSE__
+__SSE2__
+__SSE3__
+__AVX__
+__AVX2__
+__ARM__
+*/
+
 class FFastNoiseSIMDModule 
 	: public IModuleInterface
 {
